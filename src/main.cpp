@@ -275,9 +275,8 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                 return;
             } else if (cmd == 0x80) {
                 // AT command (e.g. AT^VERSION?)
-                Serial.println("[JBD RX] -> AT Command. Responding SP04S034.");
-                const char* ver = "SP04S034";
-                sendBleModuleResponse(0x80, (const uint8_t*)ver, strlen(ver));
+                Serial.printf("[JBD RX] -> AT Command. Responding with device name: %s\n", BLE_DEVICE_NAME);
+                sendBleModuleResponse(0x80, (const uint8_t*)BLE_DEVICE_NAME, strlen(BLE_DEVICE_NAME));
                 return;
             } else {
                 // Generic ACK for any other BLE module command
