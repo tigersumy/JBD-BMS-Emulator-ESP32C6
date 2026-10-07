@@ -115,13 +115,22 @@ void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, ui
     }
     Serial.println();
 
-    if (pNotifyChar) {
-        pNotifyChar->setValue(frame, totalLen);
-        pNotifyChar->notify(frame, totalLen);
-    }
-    if (pNotifyFff1) {
-        pNotifyFff1->setValue(frame, totalLen);
-        pNotifyFff1->notify(frame, totalLen);
+    // Send in <= 20-byte chunks to support Android standard ATT MTU (23 bytes) and iOS
+    size_t offset = 0;
+    while (offset < totalLen) {
+        size_t chunkSize = (totalLen - offset > 20) ? 20 : (totalLen - offset);
+        if (pNotifyChar) {
+            pNotifyChar->setValue(&frame[offset], chunkSize);
+            pNotifyChar->notify(&frame[offset], chunkSize);
+        }
+        if (pNotifyFff1) {
+            pNotifyFff1->setValue(&frame[offset], chunkSize);
+            pNotifyFff1->notify(&frame[offset], chunkSize);
+        }
+        offset += chunkSize;
+        if (offset < totalLen) {
+            delay(15); // 15ms gap between chunks for Android BLE queue
+        }
     }
 }
 
