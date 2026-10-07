@@ -1,4 +1,4 @@
-# 🔋 ESP32-C6 JBD / Xiaoxiang BMS BLE Emulator (DB24SF01 / 8S200A)
+# 🔋 ESP32-C6 JBD / Xiaoxiang BMS BLE Emulator (BS-26A-072-005 / 8S150A)
 
 <p align="center">
   <a href="README.md"><b>English</b></a> |
@@ -7,7 +7,7 @@
 
 ---
 
-A full-featured, standalone hardware-in-the-loop (HIL) emulator for **JBD (Xiaoxiang / Jiabaida / DB24SF01 / 8S200A / Overkill Solar) BMS** systems powered by **ESP32-C6** (also supports **ESP32-S3**).
+A full-featured, standalone hardware-in-the-loop (HIL) emulator for **JBD (Xiaoxiang / Jiabaida / BS-26A-072-005 / Overkill Solar) BMS** systems powered by **ESP32-C6** (also supports **ESP32-S3**).
 
 This project enables safe, rapid bench testing and calibration of inverter gateways, solar setups, smart home integrations (Home Assistant, ESPHome, Node-RED), and mobile apps without needing a physical, high-voltage battery pack.
 
@@ -16,6 +16,7 @@ This project enables safe, rapid bench testing and calibration of inverter gatew
 ## 🚀 Key Features
 
 - **Mobile App Compatibility**:
+  - **JBD BMS** (Official iOS / Android App with full PIN auth `FF AA 15` and status handshake)
   - **Xiaoxiang BMS** (iOS / Android)
   - **SMART BMS** (iOS / Android)
   - **BMS Tool** / **ESPHome JBD BMS** / **ESP32 Universal Monitor**
@@ -23,13 +24,14 @@ This project enables safe, rapid bench testing and calibration of inverter gatew
   - Primary Service UUID: `0000FF00-0000-1000-8000-00805F9B34FB` (`0xFF00`)
   - Notify/Read UUID: `0000FF01-0000-1000-8000-00805F9B34FB` (`0xFF01`)
   - Write UUID: `0000FF02-0000-1000-8000-00805F9B34FB` (`0xFF02`)
-- **Default Profile: DB24SF01 V1.0 / 8S200A**:
-  - BLE Advertised Name: `DB24SF01`
-  - Manufacturer (Register `0xA1`): `8S200A`
-  - Hardware Model (Register `0xA2`): `DB24SF01 V1.0`
-  - Firmware Version (Register `0x03`, byte 18): `13`
-  - Nominal Capacity: `200.00 Ah` (8S LiFePO4 24V)
-  - Remaining Capacity: `194.00 Ah` (97% SOC)
+- **Default Profile: BS-26A-072-005 (8S LiFePO4)**:
+  - BLE Advertised Name: `BS-26A-072-005`
+  - MAC Address: `A5:C2:3A:26:F2:C2`
+  - Manufacturer (Register `0xA0`): `Jiabaida`
+  - Device Model (Register `0xA1`): `BS-26A-072-005`
+  - Barcode String (Register `0xA2`): `BS-26A-072-005`
+  - Nominal Capacity: `150.00 Ah` (8S LiFePO4 24V)
+  - Full Parameter EEPROM Map (`0x10`..`0x3F`, `0xAA` error logs) for seamless "About Battery" / "Parameters" navigation.
 - **Realistic 8S LiFePO4 Battery Physics Simulation**:
   - Load Current: **`-17.00 A`** (with dynamic $\pm 0.1\text{A}$ jitter)
   - Power Draw: **`~447 W`** ($26.24\text{ V} \times 17.0\text{ A}$)
