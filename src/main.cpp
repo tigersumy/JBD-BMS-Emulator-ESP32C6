@@ -562,6 +562,64 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                     sendJBDResponse(0xAA, errs, 22);
                     break;
                 }
+                case 0xFA: { // Extended Memory / AFE RAM Read Command (used by Android JBD BMS)
+                    uint8_t page = (dataLen >= 1) ? buf[4] : 0x00;
+                    uint8_t offset = (dataLen >= 2) ? buf[5] : 0x00;
+                    uint8_t reqLen = (dataLen >= 3) ? buf[6] : 0x02;
+
+                    Serial.printf("[JBD FA EXT] Read Page 0x%02X, Offset 0x%02X, Length %u\n", page, offset, reqLen);
+
+                    uint8_t respBuf[64] = {0};
+                    if (offset == 0x58 && reqLen >= 16) {
+                        // Cell Voltages 1..8 in AFE RAM (16 bytes)
+                        for (int i = 0; i < 8; ++i) {
+                            respBuf[i * 2]     = (uint8_t)(g_bms.cell_mv[i] >> 8);
+                            respBuf[i * 2 + 1] = (uint8_t)(g_bms.cell_mv[i] & 0xFF);
+                        }
+                        sendJBDResponse(0xFA, respBuf, 16);
+                    } else if (offset == 0x00 && reqLen == 1) {
+                        // Chip / AFE ID
+                        respBuf[0] = 0x22;
+                        sendJBDResponse(0xFA, respBuf, 1);
+                    } else if (offset == 0x01 && reqLen == 1) {
+                        // Hardware cell count config
+                        respBuf[0] = 0x08;
+                        sendJBDResponse(0xFA, respBuf, 1);
+                    } else if (offset == 0x05 && reqLen == 1) {
+                        // Hardware revision
+                        respBuf[0] = 0x20;
+                        sendJBDResponse(0xFA, respBuf, 1);
+                    } else if (offset == 0x70 && reqLen == 1) {
+                        respBuf[0] = 0x00;
+                        sendJBDResponse(0xFA, respBuf, 1);
+                    } else if (offset == 0x9B && reqLen == 1) {
+                        // Model Series ID (8S)
+                        respBuf[0] = 0x08;
+                        sendJBDResponse(0xFA, respBuf, 1);
+                    } else if (offset == 0x9C && reqLen == 1) {
+                        respBuf[0] = 0x01;
+                        sendJBDResponse(0xFA, respBuf, 1);
+                    } else if (offset == 0x9E && reqLen <= 12) {
+                        // Serial / Barcode string (12 bytes)
+                        const char* sn = "BS26A072005";
+                        memcpy(respBuf, sn, strlen(sn));
+                        sendJBDResponse(0xFA, respBuf, reqLen);
+                    } else if (offset == 0xB0 && reqLen <= 8) {
+                        // Short model code (8 bytes)
+                        const char* m = "SP08S004";
+                        memcpy(respBuf, m, strlen(m));
+                        sendJBDResponse(0xFA, respBuf, reqLen);
+                    } else if (offset == 0x38 && reqLen >= 16) {
+                        // Calibration table
+                        memset(respBuf, 0, reqLen);
+                        sendJBDResponse(0xFA, respBuf, reqLen);
+                    } else {
+                        // Default zero response of requested length
+                        if (reqLen > 32) reqLen = 32;
+                        sendJBDResponse(0xFA, respBuf, reqLen);
+                    }
+                    break;
+                }
                 default: {
                     uint8_t dummy[2] = {0x00, 0x00};
                     Serial.printf("[JBD CMD] General Register: 0x%02X acknowledged.\n", reg);
