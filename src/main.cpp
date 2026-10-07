@@ -115,22 +115,13 @@ void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, ui
     }
     Serial.println();
 
-    // Send in <= 20-byte chunks to support Android standard ATT MTU (23 bytes) and iOS
-    size_t offset = 0;
-    while (offset < totalLen) {
-        size_t chunkSize = (totalLen - offset > 20) ? 20 : (totalLen - offset);
-        if (pNotifyChar) {
-            pNotifyChar->setValue(&frame[offset], chunkSize);
-            pNotifyChar->notify(&frame[offset], chunkSize);
-        }
-        if (pNotifyFff1) {
-            pNotifyFff1->setValue(&frame[offset], chunkSize);
-            pNotifyFff1->notify(&frame[offset], chunkSize);
-        }
-        offset += chunkSize;
-        if (offset < totalLen) {
-            delay(15); // 15ms gap between chunks for Android BLE queue
-        }
+    if (pNotifyChar) {
+        pNotifyChar->setValue(frame, totalLen);
+        pNotifyChar->notify(frame, totalLen);
+    }
+    if (pNotifyFff1) {
+        pNotifyFff1->setValue(frame, totalLen);
+        pNotifyFff1->notify(frame, totalLen);
     }
 }
 
@@ -608,8 +599,10 @@ void setup() {
     delay(1000);
 
     // Set custom Bluetooth MAC address to match real BMS: A5:C2:3A:26:F2:C2
-    uint8_t custom_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
-    esp_base_mac_addr_set(custom_mac);
+    uint8_t custom_base_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC0};
+    esp_base_mac_addr_set(custom_base_mac);
+    uint8_t custom_bt_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+    esp_iface_mac_addr_set(custom_bt_mac, ESP_MAC_BT);
 
     Serial.println("\n=======================================================");
     Serial.println("       ESP32-C6 JBD BMS BLE Emulator (BS-26A profile)  ");
@@ -626,8 +619,10 @@ void setup() {
 
     // Initialize NimBLE Device
     NimBLEDevice::init(BLE_DEVICE_NAME);
+    NimBLEDevice::setMTU(512);
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     NimBLEDevice::setSecurityAuth(false, false, false); // Open pairing
+    Serial.printf("[BLE] Active Hardware BLE Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
 
     // Create Server
     pServer = NimBLEDevice::createServer();
