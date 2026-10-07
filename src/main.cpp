@@ -275,8 +275,9 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                 return;
             } else if (cmd == 0x80) {
                 // AT command (e.g. AT^VERSION?)
-                Serial.printf("[JBD RX] -> AT Command. Responding with device name: %s\n", BLE_DEVICE_NAME);
-                sendBleModuleResponse(0x80, (const uint8_t*)BLE_DEVICE_NAME, strlen(BLE_DEVICE_NAME));
+                Serial.println("[JBD RX] -> AT Command. Responding SP08S004 (8S LiFePO4 model).");
+                const char* ver = "SP08S004";
+                sendBleModuleResponse(0x80, (const uint8_t*)ver, strlen(ver));
                 return;
             } else {
                 // Generic ACK for any other BLE module command
@@ -556,7 +557,7 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                     break;
                 }
                 case 0xA1: { // Device Model String
-                    const char* dev = "BS-26A-072-005";
+                    const char* dev = "SP08S004";
                     sendJBDResponse(0xA1, (const uint8_t*)dev, strlen(dev));
                     break;
                 }
