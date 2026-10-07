@@ -1,22 +1,21 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "esp_mac.h"
 
-#define BLE_DEVICE_NAME       "DB24SF01"
-#define SERVICE_UUID          "FF00"
-#define NOTIFY_CHAR_UUID      "FF01"
-#define WRITE_CHAR_UUID       "FF02"
+// Device profile matching the real JBD BMS (BS-26A-072-005)
+#define BLE_DEVICE_NAME       "BS-26A-072-005"
+#define SERVICE_UUID          "0000FF00-0000-1000-8000-00805F9B34FB"
+#define NOTIFY_CHAR_UUID      "0000FF01-0000-1000-8000-00805F9B34FB"
+#define WRITE_CHAR_UUID       "0000FF02-0000-1000-8000-00805F9B34FB"
 
-// Onboard WS2812 RGB LED for WeAct Studio ESP32-C6 Mini (GPIO 8)
-#ifndef RGB_LED_PIN
-#define RGB_LED_PIN 8
-#endif
+#define SERVICE_FFF0_UUID     "0000FFF0-0000-1000-8000-00805F9B34FB"
+#define NOTIFY_FFF1_UUID      "0000FFF1-0000-1000-8000-00805F9B34FB"
+#define WRITE_FFF2_UUID       "0000FFF2-0000-1000-8000-00805F9B34FB"
 
-void setRgbLed(uint8_t r, uint8_t g, uint8_t b) {
-    // 50% brightness reduction for comfortable viewing
-    uint8_t scaled_r = r / 2;
-    uint8_t scaled_g = g / 2;
-    uint8_t scaled_b = b / 2;
-    rgbLedWrite(RGB_LED_PIN, scaled_r, scaled_g, scaled_b);
+#define LED_PIN 8
+
+void setLedColor(uint8_t r, uint8_t g, uint8_t b) {
+    rgbLedWrite(LED_PIN, r, g, b);
 }
 
 enum OperationMode {
@@ -27,16 +26,16 @@ enum OperationMode {
 
 // BMS State Structure
 struct BMSState {
-    uint16_t pack_voltage_10mv = 2624;   // ~26.24 V under 17A load (8S LiFePO4)
+    uint16_t pack_voltage_10mv = 2624;   // 26.24 V under 17A load (8S LiFePO4)
     int16_t  current_10ma      = -1700;  // -17.00 A (17A Discharge)
-    uint16_t remain_cap_10mah  = 19400;  // 194.00 Ah
-    uint16_t nominal_cap_10mah = 20000;  // 200.00 Ah (8S200A)
+    uint16_t remain_cap_10mah  = 14700;  // 147.00 Ah
+    uint16_t nominal_cap_10mah = 15000;  // 150.00 Ah (8S150A)
     uint16_t cycle_count       = 15;     // 15 cycles
-    uint16_t prod_date         = 0x30AA; // 2024-05-10 ((24<<9)|(5<<5)|10)
+    uint16_t prod_date         = 0x30AA; // 2024-05-10
     uint16_t balance_low       = 0x0000; // Balancing bitmask
     uint16_t balance_high      = 0x0000;
     uint16_t protection_status = 0x0000; // 0x0000 = Normal / No alarms
-    uint8_t  software_version  = 0x13;   // v13 (matches screenshot "BMS version 13")
+    uint8_t  software_version  = 0x21;   // v2.1
     uint8_t  soc_percent       = 97;     // 97%
     uint8_t  fet_status        = 0x03;   // Bit0: Charge FET (1=ON), Bit1: Discharge FET (1=ON)
     uint8_t  cell_count        = 8;      // 8S LiFePO4 (24V)
@@ -44,54 +43,31 @@ struct BMSState {
     uint16_t ntc1_temp_01k     = 2991;   // 26.0 °C
     uint16_t ntc2_temp_01k     = 2986;   // 25.5 °C
     uint16_t cell_mv[8]        = {3280, 3283, 3279, 3282, 3278, 3284, 3280, 3281};
-    char     device_name[32]   = "DB24SF01";
+    char     device_name[32]   = "BS-26A-072-005";
 
     // Mode and Simulation state
-    OperationMode mode         = MODE_DISCHARGE; // Default: 17A discharge
-    float    target_current_a  = -17.0f;         // -17A
-    float    fractional_mah    = 0.0f;           // Integration accumulator
+    OperationMode mode         = MODE_DISCHARGE;
+    float    fractional_mah    = 0.0f;
 };
 
 BMSState g_bms;
+
 NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* pNotifyChar = nullptr;
 NimBLECharacteristic* pWriteChar = nullptr;
+NimBLECharacteristic* pNotifyFff1 = nullptr;
+NimBLECharacteristic* pWriteFff2 = nullptr;
 bool g_deviceConnected = false;
 unsigned long g_lastLogTime = 0;
 unsigned long g_lastSimTime = 0;
 
-// Dynamic status LED function
-void updateStatusLed() {
-    if (!g_deviceConnected) {
-        // 🔴 Red: Advertising / Waiting for Bluetooth client
-        setRgbLed(40, 0, 0);
-    } else {
-        // Connected to Client
-        if (g_bms.protection_status != 0) {
-            // 🟡 Yellow: Protection / Alarm triggered
-            setRgbLed(40, 32, 0);
-        } else if (g_bms.soc_percent >= 100) {
-            // ⚪ White: 100% Fully Charged
-            setRgbLed(25, 25, 25);
-        } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
-            // 🩵 Cyan: Active Charging (+17A)
-            setRgbLed(0, 35, 35);
-        } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
-            // 🟠 Orange: Active Discharging (-17A)
-            setRgbLed(40, 14, 0);
-        } else {
-            // 🟢 Green: Standby / Idle (0A, connected)
-            setRgbLed(0, 35, 0);
-        }
-    }
-}
-
-// Calculate JBD Checksum: 0x10000 - sum(bytes)
+// Calculate JBD Checksum: 0x10000 - sum(bytes), or 0xFFFF if sum is 0
 uint16_t calculateJbdCRC(const uint8_t* data, size_t len) {
     uint32_t sum = 0;
     for (size_t i = 0; i < len; ++i) {
         sum += data[i];
     }
+    if (sum == 0) return 0xFFFF;
     return (uint16_t)(0x10000 - sum);
 }
 
@@ -99,14 +75,13 @@ uint16_t calculateJbdCRC(const uint8_t* data, size_t len) {
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
         g_deviceConnected = true;
-        pServer->updateConnParams(connInfo.getConnHandle(), 12, 24, 0, 400); // 15-30ms interval for iOS
-        updateStatusLed();
-        Serial.printf("[BLE] Client connected! Peer address: %s\n", connInfo.getAddress().toString().c_str());
+        setLedColor(0, 35, 0); // GREEN: Connected
+        Serial.printf("\n[BLE] *** Client connected! Peer address: %s ***\n", connInfo.getAddress().toString().c_str());
     }
 
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
         g_deviceConnected = false;
-        updateStatusLed();
+        setLedColor(35, 0, 0); // RED: Advertising
         Serial.printf("[BLE] Client disconnected (reason: %d). Restarting advertising...\n", reason);
         NimBLEDevice::startAdvertising();
     }
@@ -114,10 +89,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
 // Response helper functions
 void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, uint8_t status = 0x00) {
-    if (!pNotifyChar || !g_deviceConnected) return;
+    if (!g_deviceConnected) return;
 
-    // Response frame format:
-    // [0xDD] [Register] [Status: 0x00] [Length: N] [Data (N bytes)] [CRC Hi] [CRC Lo] [0x77]
     size_t totalLen = 7 + payloadLen;
     uint8_t frame[64];
     
@@ -130,41 +103,29 @@ void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, ui
         memcpy(&frame[4], payload, payloadLen);
     }
 
-    // JBD Response Checksum is calculated over Status (frame[2]) + Length (frame[3]) + Data (frame[4..])
-    // Total bytes for CRC = 2 + payloadLen
     uint16_t crc = calculateJbdCRC(&frame[2], 2 + payloadLen);
     frame[4 + payloadLen] = (uint8_t)(crc >> 8);
     frame[5 + payloadLen] = (uint8_t)(crc & 0xFF);
     frame[6 + payloadLen] = 0x77;
 
-    // Send BLE notification FIRST before any logging to avoid any USB latency
-    pNotifyChar->setValue(frame, totalLen);
-    pNotifyChar->notify();
+    Serial.printf("[JBD TX -> Reg 0x%02X] (%u bytes): ", reg, (unsigned int)totalLen);
+    for (size_t i = 0; i < totalLen; ++i) {
+        Serial.printf("%02X ", frame[i]);
+    }
+    Serial.println();
 
-    if (Serial) {
-        Serial.printf("[JBD TX -> Reg 0x%02X] (%u bytes)\n", reg, (unsigned int)totalLen);
+    if (pNotifyChar) {
+        pNotifyChar->setValue(frame, totalLen);
+        pNotifyChar->notify(frame, totalLen);
+    }
+    if (pNotifyFff1) {
+        pNotifyFff1->setValue(frame, totalLen);
+        pNotifyFff1->notify(frame, totalLen);
     }
 }
 
 // Build and send Basic Info (Register 0x03)
 void sendBasicInfo() {
-    // Basic info payload is 27-31 bytes:
-    // 0x00-0x01: Voltage (10mV)
-    // 0x02-0x03: Current (10mA, signed)
-    // 0x04-0x05: Remaining Capacity (10mAh)
-    // 0x06-0x07: Nominal Capacity (10mAh)
-    // 0x08-0x09: Cycle Count
-    // 0x0A-0x0B: Production Date
-    // 0x0C-0x0D: Balance Mask Low
-    // 0x0E-0x0F: Balance Mask High
-    // 0x10-0x11: Protection / Alarm Status
-    // 0x12:      Software Version
-    // 0x13:      SOC (%)
-    // 0x14:      MOSFET Status (Bit0: Charge, Bit1: Discharge)
-    // 0x15:      Cell Count
-    // 0x16:      NTC Sensor Count
-    // 0x17-0x18: NTC 1 Temp (0.1K)
-    // 0x19-0x1A: NTC 2 Temp (0.1K)
     uint8_t data[27];
 
     data[0] = (uint8_t)(g_bms.pack_voltage_10mv >> 8);
@@ -211,7 +172,6 @@ void sendBasicInfo() {
 
 // Build and send Cell Voltages (Register 0x04)
 void sendCellVoltages() {
-    // cell_count cells * 2 bytes
     uint8_t data[32];
     uint8_t count = (g_bms.cell_count > 16) ? 16 : g_bms.cell_count;
     for (int i = 0; i < count; ++i) {
@@ -227,87 +187,131 @@ void sendDeviceName() {
     sendJBDResponse(0x05, (const uint8_t*)g_bms.device_name, len);
 }
 
-// Build and send Barcode / Serial Info (Register 0xA0)
-void sendBarcode() {
-    const char* barcode = "";
-    sendJBDResponse(0xA0, (const uint8_t*)barcode, strlen(barcode));
-}
+// Send BLE Module proprietary response (starts with FF AA)
+void sendBleModuleResponse(uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
+    if (!g_deviceConnected) return;
 
-// Build and send Manufacturer Name (Register 0xA1)
-void sendManufacturerName() {
-    const char* mfg = "8S200A";
-    sendJBDResponse(0xA1, (const uint8_t*)mfg, strlen(mfg));
-}
+    size_t totalLen = 4 + payloadLen + 1;
+    uint8_t frame[64];
+    
+    frame[0] = 0xFF;
+    frame[1] = 0xAA;
+    frame[2] = cmd;
+    frame[3] = payloadLen;
 
-// Build and send Hardware Info (Register 0xA2)
-void sendHardwareVersion() {
-    const char* hw = "DB24SF01 V1.0";
-    sendJBDResponse(0xA2, (const uint8_t*)hw, strlen(hw));
-}
-
-// Build and send Parameter / EEPROM registers (0x10 - 0x3F)
-void sendParameterRegister(uint8_t reg) {
-    uint16_t val = 0;
-    switch (reg) {
-        case 0x10: val = 3650; break;  // Cell Overvoltage trigger (mV)
-        case 0x11: val = 3550; break;  // Cell Overvoltage release (mV)
-        case 0x12: val = 2500; break;  // Cell Undervoltage trigger (mV)
-        case 0x13: val = 2800; break;  // Cell Undervoltage release (mV)
-        case 0x14: val = 2920; break;  // Pack Overvoltage trigger (10mV)
-        case 0x15: val = 2840; break;  // Pack Overvoltage release (10mV)
-        case 0x16: val = 2000; break;  // Pack Undervoltage trigger (10mV)
-        case 0x17: val = 2240; break;  // Pack Undervoltage release (10mV)
-        case 0x18: val = 3281; break;  // Charge Overtemp trigger (55.0°C)
-        case 0x19: val = 3181; break;  // Charge Overtemp release (45.0°C)
-        case 0x1A: val = 2731; break;  // Charge Undertemp trigger (0.0°C)
-        case 0x1B: val = 2781; break;  // Charge Undertemp release (5.0°C)
-        case 0x1C: val = 3381; break;  // Discharge Overtemp trigger (65.0°C)
-        case 0x1D: val = 3281; break;  // Discharge Overtemp release (55.0°C)
-        case 0x1E: val = 2531; break;  // Discharge Undertemp trigger (-20.0°C)
-        case 0x1F: val = 2631; break;  // Discharge Undertemp release (-10.0°C)
-        case 0x20: val = 10000; break; // Charge Overcurrent (100.0A)
-        case 0x21: val = 10000; break; // Discharge Overcurrent (100.0A)
-        case 0x22: val = 3350; break;  // Balance Start Voltage (mV)
-        case 0x23: val = 15; break;    // Balance Delta Voltage (mV)
-        default: val = 0; break;
+    uint8_t sum = cmd + payloadLen;
+    if (payload && payloadLen > 0) {
+        memcpy(&frame[4], payload, payloadLen);
+        for (size_t i = 0; i < payloadLen; ++i) {
+            sum += payload[i];
+        }
     }
-    uint8_t data[2];
-    data[0] = (uint8_t)(val >> 8);
-    data[1] = (uint8_t)(val & 0xFF);
-    sendJBDResponse(reg, data, sizeof(data));
+    frame[4 + payloadLen] = sum;
+
+    Serial.printf("[BLE MODULE TX -> Cmd 0x%02X] (%u bytes): ", cmd, (unsigned int)totalLen);
+    for (size_t i = 0; i < totalLen; ++i) {
+        Serial.printf("%02X ", frame[i]);
+    }
+    Serial.println();
+
+    if (pNotifyChar) {
+        pNotifyChar->setValue(frame, totalLen);
+        pNotifyChar->notify(frame, totalLen);
+    }
+    if (pNotifyFff1) {
+        pNotifyFff1->setValue(frame, totalLen);
+        pNotifyFff1->notify(frame, totalLen);
+    }
 }
 
-// Write callback handler for 0xFF02
+char g_pin[16] = "123456";
+
+// Write callback handler for incoming BLE packets
 class WriteCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         std::string rxData = pCharacteristic->getValue();
         size_t len = rxData.length();
-        if (len < 7) {
-            Serial.printf("[JBD RX] Received invalid short frame (%u bytes)\n", (unsigned int)len);
-            return;
-        }
+        if (len == 0) return;
 
         const uint8_t* buf = (const uint8_t*)rxData.data();
-        Serial.printf("[JBD RX <- App] (%u bytes): ", (unsigned int)len);
+        Serial.printf("\n[JBD RAW RX <- App on Char %s] (%u bytes): ", 
+                      pCharacteristic->getUUID().toString().c_str(), (unsigned int)len);
         for (size_t i = 0; i < len; ++i) {
             Serial.printf("%02X ", buf[i]);
         }
         Serial.println();
 
-        // Validate Start Byte (0xDD) and Stop Byte (0x77)
-        if (buf[0] != 0xDD || buf[len - 1] != 0x77) {
-            Serial.println("[JBD RX] Warning: Invalid start/stop frame delimiter.");
+        // Handle BLE Module commands (starts with FF AA or FF 55)
+        if (len >= 4 && buf[0] == 0xFF && (buf[1] == 0xAA || buf[1] == 0x55)) {
+            uint8_t cmd = buf[2];
+            uint8_t dataLen = buf[3];
+            Serial.printf("[JBD RX] BLE Module Command 0x%02X (len %u)\n", cmd, dataLen);
+
+            if (cmd == 0x15) {
+                // PIN Verification / Authentication
+                if (dataLen >= 1 && dataLen <= 15) {
+                    memcpy(g_pin, &buf[4], dataLen);
+                    g_pin[dataLen] = '\0';
+                }
+                Serial.printf("[JBD RX] -> PIN Verification with '%s'. Responding SUCCESS (0x00).\n", g_pin);
+                uint8_t okPayload[1] = { 0x00 };
+                sendBleModuleResponse(0x15, okPayload, 1);
+                return;
+            } else if (cmd == 0x19) {
+                // Module Status / Capability Query
+                Serial.println("[JBD RX] -> Module Status query. Responding SUCCESS (0x00).");
+                uint8_t okPayload[1] = { 0x00 };
+                sendBleModuleResponse(0x19, okPayload, 1);
+                return;
+            } else if (cmd == 0x80) {
+                // AT command (e.g. AT^VERSION?)
+                Serial.println("[JBD RX] -> AT Command. Responding SP04S034.");
+                const char* ver = "SP04S034";
+                sendBleModuleResponse(0x80, (const uint8_t*)ver, strlen(ver));
+                return;
+            } else {
+                // Generic ACK for any other BLE module command
+                uint8_t okPayload[1] = { 0x00 };
+                sendBleModuleResponse(cmd, okPayload, 1);
+                return;
+            }
+        }
+
+        // Handle 3B 3C Sinowealth / Jiabaida telemetry queries
+        if (len >= 2 && buf[0] == 0x3B && buf[1] == 0x3C) {
+            Serial.println("[JBD RX] 3B 3C Query frame received. Responding status OK.");
+            uint8_t resp3b[15] = { 0x3B, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x97, 0x71, 0x0D };
+            if (pNotifyChar) {
+                pNotifyChar->setValue(resp3b, sizeof(resp3b));
+                pNotifyChar->notify(resp3b, sizeof(resp3b));
+            }
+            if (pNotifyFff1) {
+                pNotifyFff1->setValue(resp3b, sizeof(resp3b));
+                pNotifyFff1->notify(resp3b, sizeof(resp3b));
+            }
             return;
         }
 
-        uint8_t cmd      = buf[1]; // 0xA5 (Read), 0x5A (Write), or 0xAA (Ping/Check)
+        // Validate Start Byte (0xDD) and Stop Byte (0x77)
+        if (buf[0] != 0xDD || buf[len - 1] != 0x77) {
+            Serial.println("[JBD RX] Framing mismatch. Replying generic ACK...");
+            sendJBDResponse(buf[0], nullptr, 0, 0x00);
+            return;
+        }
+
+        uint8_t cmd      = buf[1]; // 0xA5 (Read) or 0x5A (Write)
         uint8_t reg      = buf[2]; // Target Register
         uint8_t dataLen  = buf[3]; // Payload data length
 
         if (cmd == 0xA5) {
             // Read Command
-            Serial.printf("[JBD CMD] Read Register 0x%02X\n", reg);
+            Serial.printf("[JBD CMD] >> Read Request for Register 0x%02X <<\n", reg);
             switch (reg) {
+                case 0x00: { // Device Status / Unlock Status
+                    uint8_t status0[2] = {0x00, 0x00};
+                    sendJBDResponse(0x00, status0, 2);
+                    break;
+                }
                 case 0x03: // Basic Info
                     sendBasicInfo();
                     break;
@@ -317,68 +321,211 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                 case 0x05: // Device Name
                     sendDeviceName();
                     break;
-                case 0x06: // PIN Code / Password Query
-                    {
-                        uint8_t pinData[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-                        sendJBDResponse(0x06, pinData, 7);
-                    }
+                case 0xA0: { // Manufacturer Name
+                    const char* mfg = "Jiabaida";
+                    sendJBDResponse(0xA0, (const uint8_t*)mfg, strlen(mfg));
                     break;
-                case 0xA0: // Barcode / Serial
-                    sendBarcode();
+                }
+                case 0xA1: { // Device Model String
+                    const char* dev = "BS-26A-072-005";
+                    sendJBDResponse(0xA1, (const uint8_t*)dev, strlen(dev));
                     break;
-                case 0xA1: // Manufacturer Name
-                    sendManufacturerName();
+                }
+                case 0xA2: { // Barcode String
+                    const char* hw = "BS-26A-072-005";
+                    sendJBDResponse(0xA2, (const uint8_t*)hw, strlen(hw));
                     break;
-                case 0xA2: // Hardware Version String
-                    sendHardwareVersion();
+                }
+                case 0x10: { // Design Capacity (150.00Ah = 15000 = 0x3A98)
+                    uint8_t cap[2] = {0x3A, 0x98};
+                    sendJBDResponse(0x10, cap, 2);
                     break;
-                case 0xAA: // Factory Mode Status Check
-                    {
-                        uint8_t ackData[2] = {0x00, 0x00};
-                        sendJBDResponse(0xAA, ackData, 2);
-                    }
+                }
+                case 0x11: { // Cycle Capacity (147.00Ah = 14700 = 0x396C)
+                    uint8_t cap[2] = {0x39, 0x6C};
+                    sendJBDResponse(0x11, cap, 2);
                     break;
-                default:
-                    if (reg >= 0x10 && reg <= 0x3F) {
-                        sendParameterRegister(reg);
-                    } else {
-                        Serial.printf("[JBD CMD] Unhandled Read Register 0x%02X -> returning default 2 bytes\n", reg);
-                        uint8_t defData[2] = {0x00, 0x00};
-                        sendJBDResponse(reg, defData, 2);
-                    }
+                }
+                case 0x12: { // Chg Overcurrent (50.00A = 5000 = 0x1388)
+                    uint8_t chgOc[2] = {0x13, 0x88};
+                    sendJBDResponse(0x12, chgOc, 2);
                     break;
+                }
+                case 0x13: { // Dischg Overcurrent (100.00A = 10000 = 0x2710)
+                    uint8_t dsgOc[2] = {0x27, 0x10};
+                    sendJBDResponse(0x13, dsgOc, 2);
+                    break;
+                }
+                case 0x14: { // Short Circuit Delay (200us = 0x00C8)
+                    uint8_t scd[2] = {0x00, 0xC8};
+                    sendJBDResponse(0x14, scd, 2);
+                    break;
+                }
+                case 0x15: { // Manufacture Date
+                    uint8_t mfgDate[2] = {0x30, 0xAA};
+                    sendJBDResponse(0x15, mfgDate, 2);
+                    break;
+                }
+                case 0x16: { // Serial Number String
+                    const char* sn = "BS-26A-072-005";
+                    sendJBDResponse(0x16, (const uint8_t*)sn, strlen(sn));
+                    break;
+                }
+                case 0x17: { // Bluetooth Name String
+                    const char* btName = "BS-26A-072-005";
+                    sendJBDResponse(0x17, (const uint8_t*)btName, strlen(btName));
+                    break;
+                }
+                case 0x18: { // Bluetooth PIN String
+                    sendJBDResponse(0x18, (const uint8_t*)g_pin, strlen(g_pin));
+                    break;
+                }
+                case 0x19: { // User Data / Barcode String
+                    const char* uData = "BS-26A-072-005";
+                    sendJBDResponse(0x19, (const uint8_t*)uData, strlen(uData));
+                    break;
+                }
+                case 0x20: { // High Cell Voltage Alarm (3600mV)
+                    uint8_t v[2] = {0x0E, 0x10};
+                    sendJBDResponse(0x20, v, 2);
+                    break;
+                }
+                case 0x21: { // High Cell Voltage Alarm Release (3450mV)
+                    uint8_t v[2] = {0x0D, 0x7A};
+                    sendJBDResponse(0x21, v, 2);
+                    break;
+                }
+                case 0x22: { // Low Cell Voltage Alarm (2700mV)
+                    uint8_t v[2] = {0x0A, 0x8C};
+                    sendJBDResponse(0x22, v, 2);
+                    break;
+                }
+                case 0x23: { // Low Cell Voltage Alarm Release (2900mV)
+                    uint8_t v[2] = {0x0B, 0x54};
+                    sendJBDResponse(0x23, v, 2);
+                    break;
+                }
+                case 0x24: { // Cell Overvoltage Protection (3650mV = 0x0E42)
+                    uint8_t covp[2] = {0x0E, 0x42};
+                    sendJBDResponse(0x24, covp, 2);
+                    break;
+                }
+                case 0x25: { // Cell Overvoltage Release (3500mV = 0x0DAC)
+                    uint8_t covpRel[2] = {0x0D, 0xAC};
+                    sendJBDResponse(0x25, covpRel, 2);
+                    break;
+                }
+                case 0x26: { // Cell Undervoltage Protection (2500mV = 0x09C4)
+                    uint8_t cuvp[2] = {0x09, 0xC4};
+                    sendJBDResponse(0x26, cuvp, 2);
+                    break;
+                }
+                case 0x27: { // Cell Undervoltage Release (2800mV = 0x0AF0)
+                    uint8_t cuvpRel[2] = {0x0A, 0xF0};
+                    sendJBDResponse(0x27, cuvpRel, 2);
+                    break;
+                }
+                case 0x28: { // Pack Overvoltage Protection (29200mV = 0x7210)
+                    uint8_t v[2] = {0x72, 0x10};
+                    sendJBDResponse(0x28, v, 2);
+                    break;
+                }
+                case 0x29: { // Pack Overvoltage Release (28000mV = 0x6D60)
+                    uint8_t v[2] = {0x6D, 0x60};
+                    sendJBDResponse(0x29, v, 2);
+                    break;
+                }
+                case 0x2A: { // Pack Undervoltage Protection (20000mV = 0x4E20)
+                    uint8_t v[2] = {0x4E, 0x20};
+                    sendJBDResponse(0x2A, v, 2);
+                    break;
+                }
+                case 0x2B: { // Pack Undervoltage Release (22400mV = 0x5780)
+                    uint8_t v[2] = {0x57, 0x80};
+                    sendJBDResponse(0x2B, v, 2);
+                    break;
+                }
+                case 0x2C: { // Chg High Temp (55C = 3281 = 0x0CD1)
+                    uint8_t t[2] = {0x0C, 0xD1};
+                    sendJBDResponse(0x2C, t, 2);
+                    break;
+                }
+                case 0x2D: { // Function Configuration Mask
+                    uint8_t fnCfg[2] = {0x00, 0x1F}; // All features active
+                    sendJBDResponse(0x2D, fnCfg, 2);
+                    break;
+                }
+                case 0x2E: { // Chg Low Temp (0C = 2731 = 0x0AAB)
+                    uint8_t t[2] = {0x0A, 0xAB};
+                    sendJBDResponse(0x2E, t, 2);
+                    break;
+                }
+                case 0x2F: { // Chg Low Temp Release (5C = 2781 = 0x0ADD)
+                    uint8_t t[2] = {0x0A, 0xDD};
+                    sendJBDResponse(0x2F, t, 2);
+                    break;
+                }
+                case 0x30: { // Dischg High Temp (65C = 3381 = 0x0D35)
+                    uint8_t t[2] = {0x0D, 0x35};
+                    sendJBDResponse(0x30, t, 2);
+                    break;
+                }
+                case 0x31: { // Dischg High Temp Release (55C = 3281 = 0x0CD1)
+                    uint8_t t[2] = {0x0C, 0xD1};
+                    sendJBDResponse(0x31, t, 2);
+                    break;
+                }
+                case 0x32: { // Dischg Low Temp (-20C = 2531 = 0x09E3)
+                    uint8_t t[2] = {0x09, 0xE3};
+                    sendJBDResponse(0x32, t, 2);
+                    break;
+                }
+                case 0x33: { // Dischg Low Temp Release (-10C = 2631 = 0x0A47)
+                    uint8_t t[2] = {0x0A, 0x47};
+                    sendJBDResponse(0x33, t, 2);
+                    break;
+                }
+                case 0x34: { // Balance Start Voltage (3400mV = 0x0D48)
+                    uint8_t b[2] = {0x0D, 0x48};
+                    sendJBDResponse(0x34, b, 2);
+                    break;
+                }
+                case 0x35: { // Balance Delta (10mV = 0x000A)
+                    uint8_t b[2] = {0x00, 0x0A};
+                    sendJBDResponse(0x35, b, 2);
+                    break;
+                }
+                case 0xAA: { // Error Counts (11 U16 = 22 bytes zeroes)
+                    uint8_t errs[22] = {0};
+                    sendJBDResponse(0xAA, errs, 22);
+                    break;
+                }
+                default: {
+                    uint8_t dummy[2] = {0x00, 0x00};
+                    Serial.printf("[JBD CMD] General Register: 0x%02X acknowledged.\n", reg);
+                    sendJBDResponse(reg, dummy, 2, 0x00);
+                    break;
+                }
             }
-        } else if (cmd == 0xAA) {
-            // Check / Handshake Command
-            Serial.printf("[JBD CMD] Check Command 0x%02X\n", reg);
-            uint8_t ackData[2] = {0x00, 0x00};
-            sendJBDResponse(reg, ackData, 2);
         } else if (cmd == 0x5A) {
             // Write Command
-            Serial.printf("[JBD CMD] Write Register 0x%02X (dataLen=%u)\n", reg, dataLen);
+            Serial.printf("[JBD CMD] >> Write Command for Register 0x%02X (dataLen=%u) <<\n", reg, dataLen);
             if (reg == 0xE1) {
                 // MOSFET Control
-                // Example payload: 0x00 (both off), 0x01 (charge on), 0x02 (discharge on), 0x03 (both on)
                 if (dataLen >= 1) {
                     uint8_t newFetState = buf[4];
                     if (dataLen >= 2 && buf[4] == 0x00) {
-                        newFetState = buf[5]; // Some variants send uint16_t state
+                        newFetState = buf[5];
                     }
                     g_bms.fet_status = newFetState & 0x03;
-                    updateStatusLed();
                     Serial.printf("[JBD FET] Updated MOSFET State: 0x%02X (Charge FET: %s, Discharge FET: %s)\n",
                                   g_bms.fet_status,
                                   (g_bms.fet_status & 0x01) ? "ON" : "OFF",
                                   (g_bms.fet_status & 0x02) ? "ON" : "OFF");
                 }
-                // Send ACK status
                 sendJBDResponse(0xE1, nullptr, 0, 0x00);
-            } else if (reg == 0x00 || reg == 0x01) {
-                // Factory / EEPROM Unlock commands
-                Serial.printf("[JBD CMD] Unlock / Configuration command 0x%02X acknowledged.\n", reg);
-                sendJBDResponse(reg, nullptr, 0, 0x00);
             } else {
-                Serial.printf("[JBD CMD] General Write Register 0x%02X acknowledged.\n", reg);
+                Serial.printf("[JBD CMD] Unlock / Parameter Write 0x%02X acknowledged.\n", reg);
                 sendJBDResponse(reg, nullptr, 0, 0x00);
             }
         }
@@ -387,13 +534,17 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
 
 void setup() {
     Serial.begin(115200);
-    Serial.setTxTimeoutMs(0); // Non-blocking USB CDC output - never block BLE thread
-    delay(500);
+    delay(1000);
+
+    // Set custom Bluetooth MAC address to match real BMS: A5:C2:3A:26:F2:C2
+    uint8_t custom_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+    esp_base_mac_addr_set(custom_mac);
 
     Serial.println("\n=======================================================");
-    Serial.println("       ESP32-C6 JBD (Xiaoxiang) BMS BLE Emulator       ");
+    Serial.println("       ESP32-C6 JBD BMS BLE Emulator (BS-26A profile)  ");
     Serial.println("=======================================================");
     Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
+    Serial.printf("Target MAC: A5:C2:3A:26:F2:C2\n");
     Serial.printf("Pack Voltage: %.2fV | SOC: %u%% | Cells: %uS\n", 
                   g_bms.pack_voltage_10mv / 100.0f, g_bms.soc_percent, g_bms.cell_count);
     Serial.printf("MOSFET Status: 0x%02X (Charge: %s, Discharge: %s)\n",
@@ -404,41 +555,75 @@ void setup() {
 
     // Initialize NimBLE Device
     NimBLEDevice::init(BLE_DEVICE_NAME);
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Max TX power for robust iOS connectivity
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    NimBLEDevice::setSecurityAuth(false, false, false); // Open pairing
 
     // Create Server
     pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
 
-    // Create JBD Primary Service 0xFF00
+    // 1. Primary Service 0xFF00 (Classic & Standard JBD)
     NimBLEService* pService = pServer->createService(SERVICE_UUID);
-
-    // Create Characteristic 0xFF01 (READ | NOTIFY)
     pNotifyChar = pService->createCharacteristic(
         NOTIFY_CHAR_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
     );
-
-    // Create Characteristic 0xFF02 (WRITE | WRITE_NR)
     pWriteChar = pService->createCharacteristic(
         WRITE_CHAR_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
     );
     pWriteChar->setCallbacks(new WriteCallbacks());
 
-    // Start Server & Advertising
+    // 2. Secondary Service 0xFFF0 (Jiabaida New Revision)
+    NimBLEService* pServiceFff0 = pServer->createService(SERVICE_FFF0_UUID);
+    pNotifyFff1 = pServiceFff0->createCharacteristic(
+        NOTIFY_FFF1_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+    );
+    pWriteFff2 = pServiceFff0->createCharacteristic(
+        WRITE_FFF2_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+    );
+    pWriteFff2->setCallbacks(new WriteCallbacks());
+
+    // 3. Device Info Service 0x180A
+    NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
+    NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
+        NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
+    );
+    pModelChar->setValue("BS-26A-072-005");
+
+    NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
+        NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
+    );
+    pMfgChar->setValue("Jiabaida");
+
+    // Start Server
     pServer->start();
 
+    // Configure Advertising for iOS CoreBluetooth (Strict <= 31 bytes per packet)
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->setName(BLE_DEVICE_NAME);
-    pAdvertising->addServiceUUID(pService->getUUID());
-    pAdvertising->enableScanResponse(true);
+
+    // Primary Advertisement Packet (25 bytes <= 31 bytes): Flags + Complete Name + 16-bit Service UUID
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06); // General Discoverable + BR_EDR_NOT_SUPPORTED
+    advData.setName(BLE_DEVICE_NAME);
+    advData.setCompleteServices(NimBLEUUID((uint16_t)0xFF00));
+
+    // Scan Response Packet (24 bytes <= 31 bytes): 128-bit UUID + pure 6-byte MAC
+    NimBLEAdvertisementData scanData;
+    scanData.setCompleteServices(NimBLEUUID("0000FF00-0000-1000-8000-00805F9B34FB"));
+    uint8_t mfgBytes[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+    scanData.setManufacturerData(std::string((char*)mfgBytes, 6));
+
+    pAdvertising->setAdvertisementData(advData);
+    pAdvertising->setScanResponseData(scanData);
+    pAdvertising->setMinInterval(32); // 20ms advertising interval for instant discovery
+    pAdvertising->setMaxInterval(64); // 40ms
     pAdvertising->start();
 
-    // Initial state: Red LED indicates Advertising / Waiting for client
-    updateStatusLed();
-
-    Serial.println("[BLE] Advertising started successfully. Waiting for Xiaoxiang / Overkill Solar app...");
+    Serial.println("[BLE] 100% Compliant Dual-UUID iOS Advertising started as 'BS-26A-072-005'.");
+    Serial.println("[BLE] Ready for connection from JBD BMS iOS app...");
 }
 
 void loop() {
@@ -477,115 +662,80 @@ void loop() {
             g_bms.cell_mv[5] = 3284 - drift;
             g_bms.cell_mv[6] = 3280 + drift;
             g_bms.cell_mv[7] = 3281 - drift;
-            g_bms.ntc1_temp_01k = 2991; // 26.0 °C
-            g_bms.ntc2_temp_01k = 2986; // 25.5 °C
 
+            uint32_t sum_mv = 0;
+            for (int i = 0; i < 8; ++i) sum_mv += g_bms.cell_mv[i];
+            g_bms.pack_voltage_10mv = (uint16_t)(sum_mv / 10);
         } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
-            // Active Charge (+17A)
-            float currentA = 17.0f + jitter;
-            g_bms.current_10ma = (int16_t)(currentA * 100.0f); // +1700 (10mA)
+            // Active Charge (+25A)
+            float currentA = 25.0f + jitter;
+            g_bms.current_10ma = (int16_t)(currentA * 100.0f);
 
-            // Integrate capacity: charging increases remain_cap
-            float delta_mah = (17.0f * 1000.0f) * (dt_sec / 3600.0f);
+            float delta_mah = (25.0f * 1000.0f) * (dt_sec / 3600.0f);
             g_bms.fractional_mah += delta_mah;
             while (g_bms.fractional_mah >= 10.0f) {
                 if (g_bms.remain_cap_10mah < g_bms.nominal_cap_10mah) g_bms.remain_cap_10mah++;
                 g_bms.fractional_mah -= 10.0f;
             }
 
-            // Cell voltages rise under 17A charge (~3.42V)
-            g_bms.cell_mv[0] = 3420 + drift;
-            g_bms.cell_mv[1] = 3424 - drift;
-            g_bms.cell_mv[2] = 3418 + drift;
-            g_bms.cell_mv[3] = 3422 - drift;
-            g_bms.cell_mv[4] = 3419 + drift;
-            g_bms.cell_mv[5] = 3425 - drift;
-            g_bms.cell_mv[6] = 3421 + drift;
-            g_bms.cell_mv[7] = 3423 - drift;
-            g_bms.ntc1_temp_01k = 2986; // 25.5 °C
-            g_bms.ntc2_temp_01k = 2981; // 25.0 °C
+            // Cell voltages rise during charging (~3.45V)
+            g_bms.cell_mv[0] = 3450 + drift;
+            g_bms.cell_mv[1] = 3452 - drift;
+            g_bms.cell_mv[2] = 3448 + drift;
+            g_bms.cell_mv[3] = 3451 - drift;
+            g_bms.cell_mv[4] = 3449 + drift;
+            g_bms.cell_mv[5] = 3453 - drift;
+            g_bms.cell_mv[6] = 3450 + drift;
+            g_bms.cell_mv[7] = 3451 - drift;
 
+            uint32_t sum_mv = 0;
+            for (int i = 0; i < 8; ++i) sum_mv += g_bms.cell_mv[i];
+            g_bms.pack_voltage_10mv = (uint16_t)(sum_mv / 10);
         } else {
-            // Idle / FETs Disabled (0.00A)
+            // Idle Mode (0A)
             g_bms.current_10ma = 0;
-
-            // Resting cell voltages (~3.345V)
-            g_bms.cell_mv[0] = 3345 + drift;
-            g_bms.cell_mv[1] = 3348 - drift;
-            g_bms.cell_mv[2] = 3346 + drift;
-            g_bms.cell_mv[3] = 3347 - drift;
-            g_bms.cell_mv[4] = 3344 + drift;
-            g_bms.cell_mv[5] = 3348 - drift;
-            g_bms.cell_mv[6] = 3345 + drift;
-            g_bms.cell_mv[7] = 3347 - drift;
-            g_bms.ntc1_temp_01k = 2981; // 25.0 °C
-            g_bms.ntc2_temp_01k = 2976; // 24.5 °C
+            for (int i = 0; i < 8; ++i) g_bms.cell_mv[i] = 3320;
+            g_bms.pack_voltage_10mv = 2656; // 8 * 3.32V
         }
 
-        // Calculate SOC %
-        g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
-
-        // Calculate total pack voltage (10mV units)
-        uint32_t totalMv = 0;
-        for (int i = 0; i < g_bms.cell_count; ++i) {
-            totalMv += g_bms.cell_mv[i];
+        // Calculate SOC (%) based on capacity
+        if (g_bms.nominal_cap_10mah > 0) {
+            g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
         }
-        g_bms.pack_voltage_10mv = totalMv / 10;
     }
 
-    // Periodic telemetry log (every 3 seconds)
-    if (now - g_lastLogTime >= 3000) {
+    // Periodic Serial Status Log (every 2000ms)
+    if (now - g_lastLogTime >= 2000) {
         g_lastLogTime = now;
-        updateStatusLed();
-
         float packV = g_bms.pack_voltage_10mv / 100.0f;
-        float currA = g_bms.current_10ma / 100.0f;
-        float powerW = packV * fabs(currA);
+        float currentA = g_bms.current_10ma / 100.0f;
+        float powerW = packV * fabs(currentA);
+        float remainAh = g_bms.remain_cap_10mah / 100.0f;
 
-        const char* modeStr = (g_bms.current_10ma > 50) ? "CHARGING (+)" :
-                              ((g_bms.current_10ma < -50) ? "DISCHARGING (-)" : "STANDBY (IDLE)");
+        const char* modeStr = (g_bms.mode == MODE_DISCHARGE) ? "DISCHARGING (-)" : 
+                              (g_bms.mode == MODE_CHARGE) ? "CHARGING (+)" : "IDLE";
 
-        Serial.printf("[STATUS] BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
+        Serial.printf("[STATUS] BLE: %s | Mode: %s | Pack: %.2fV | Current: %.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
                       g_deviceConnected ? "CONNECTED" : "ADVERTISING",
-                      modeStr,
-                      packV,
-                      currA,
-                      powerW,
-                      g_bms.soc_percent,
-                      g_bms.remain_cap_10mah / 100.0f);
+                      modeStr, packV, currentA, powerW, g_bms.soc_percent, remainAh);
     }
 
-    // Process serial input for live interactive control
+    // Handle interactive serial commands for test bench control
     if (Serial.available()) {
         char ch = Serial.read();
-        if (ch == '1' || ch == 'd' || ch == 'D') {
+        if (ch == 'd' || ch == 'D') {
             g_bms.mode = MODE_DISCHARGE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) <<<");
-        } else if (ch == '2' || ch == 'g' || ch == 'G') {
+            Serial.println("\n[CMD] Switched to 17A DISCHARGE mode.");
+        } else if (ch == 'c' || ch == 'C') {
             g_bms.mode = MODE_CHARGE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_CHARGE (+17.00 A) <<<");
-        } else if (ch == '0' || ch == 'i' || ch == 'I') {
+            Serial.println("\n[CMD] Switched to 25A CHARGE mode.");
+        } else if (ch == 'i' || ch == 'I') {
             g_bms.mode = MODE_IDLE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_IDLE (0.00 A Standby) <<<");
-        } else if (ch == 't' || ch == 'T') {
-            g_bms.mode = (g_bms.mode == MODE_DISCHARGE) ? MODE_CHARGE : MODE_DISCHARGE;
-            updateStatusLed();
-            Serial.printf(">>> Toggled Mode to %s <<<\n", (g_bms.mode == MODE_CHARGE) ? "CHARGE (+17A)" : "DISCHARGE (-17A)");
-        } else if (ch == '+' || ch == '=') {
-            if (g_bms.soc_percent < 100) g_bms.soc_percent++;
-            g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
-            updateStatusLed();
-            Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
-        } else if (ch == '-' || ch == '_') {
-            if (g_bms.soc_percent > 0) g_bms.soc_percent--;
-            g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
-            updateStatusLed();
-            Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
+            Serial.println("\n[CMD] Switched to IDLE mode.");
+        } else if (ch == 'f' || ch == 'F') {
+            // Toggle MOSFETs
+            g_bms.fet_status = (g_bms.fet_status == 0x03) ? 0x00 : 0x03;
+            Serial.printf("\n[CMD] Toggled MOSFETs: %s\n", (g_bms.fet_status == 0x03) ? "ENABLED (ON)" : "DISABLED (OFF)");
         }
     }
-
-    delay(10);
 }
