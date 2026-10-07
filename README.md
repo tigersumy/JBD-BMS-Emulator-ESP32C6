@@ -26,12 +26,14 @@ This project enables safe, rapid bench testing and calibration of inverter gatew
   - Write UUID: `0000FF02-0000-1000-8000-00805F9B34FB` (`0xFF02`)
 - **Default Profile: BS-26A-072-005 (8S LiFePO4)**:
   - BLE Advertised Name: `BS-26A-072-005`
-  - MAC Address: `A5:C2:3A:26:F2:C2`
+  - Exact Hardware MAC: `A5:C2:3A:26:F2:C2` (hardware-level interface mapping)
   - Manufacturer (Register `0xA0`): `Jiabaida`
-  - Device Model (Register `0xA1`): `BS-26A-072-005`
+  - Factory Hardware Model (Register `0xA1` & `AT^VERSION?`): `SP08S004` (8S LiFePO4 profile)
   - Barcode String (Register `0xA2`): `BS-26A-072-005`
   - Nominal Capacity: `150.00 Ah` (8S LiFePO4 24V)
   - Full Parameter EEPROM Map (`0x10`..`0x3F`, `0xAA` error logs) for seamless "About Battery" / "Parameters" navigation.
+  - **Extended AFE RAM Memory Protocol (`0xFA`)**: Full support for Android JBD app direct memory reading (offset `0x58` cell voltages in mV, chip config, serial).
+  - **Universal ATT MTU Chunking**: 20-byte packet streaming with inter-frame delays for 100% reliable data parsing across both Android (MTU 23) and iOS (MTU 512).
 - **Realistic 8S LiFePO4 Battery Physics Simulation**:
   - Load Current: **`-17.00 A`** (with dynamic $\pm 0.1\text{A}$ jitter)
   - Power Draw: **`~447 W`** ($26.24\text{ V} \times 17.0\text{ A}$)
