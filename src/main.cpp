@@ -322,88 +322,104 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                 case 0x05: // Device Name
                     sendDeviceName();
                     break;
-                case 0xA0: { // Manufacturer Name
-                    const char* mfg = "Jiabaida";
-                    sendJBDResponse(0xA0, (const uint8_t*)mfg, strlen(mfg));
-                    break;
-                }
-                case 0xA1: { // Device Model String
-                    const char* dev = "BS-26A-072-005";
-                    sendJBDResponse(0xA1, (const uint8_t*)dev, strlen(dev));
-                    break;
-                }
-                case 0xA2: { // Barcode String
-                    const char* hw = "BS-26A-072-005";
-                    sendJBDResponse(0xA2, (const uint8_t*)hw, strlen(hw));
-                    break;
-                }
                 case 0x10: { // Design Capacity (150.00Ah = 15000 = 0x3A98)
-                    uint8_t cap[2] = {0x3A, 0x98};
-                    sendJBDResponse(0x10, cap, 2);
+                    uint8_t val[2] = {0x3A, 0x98};
+                    sendJBDResponse(0x10, val, 2);
                     break;
                 }
                 case 0x11: { // Cycle Capacity (147.00Ah = 14700 = 0x396C)
-                    uint8_t cap[2] = {0x39, 0x6C};
-                    sendJBDResponse(0x11, cap, 2);
+                    uint8_t val[2] = {0x39, 0x6C};
+                    sendJBDResponse(0x11, val, 2);
                     break;
                 }
-                case 0x12: { // Chg Overcurrent (50.00A = 5000 = 0x1388)
-                    uint8_t chgOc[2] = {0x13, 0x88};
-                    sendJBDResponse(0x12, chgOc, 2);
+                case 0x12: { // 100% capacity voltage (3400mV = 0x0D48)
+                    uint8_t val[2] = {0x0D, 0x48};
+                    sendJBDResponse(0x12, val, 2);
                     break;
                 }
-                case 0x13: { // Dischg Overcurrent (100.00A = 10000 = 0x2710)
-                    uint8_t dsgOc[2] = {0x27, 0x10};
-                    sendJBDResponse(0x13, dsgOc, 2);
+                case 0x13: { // 80% capacity voltage (3330mV = 0x0D02)
+                    uint8_t val[2] = {0x0D, 0x02};
+                    sendJBDResponse(0x13, val, 2);
                     break;
                 }
-                case 0x14: { // Short Circuit Delay (200us = 0x00C8)
-                    uint8_t scd[2] = {0x00, 0xC8};
-                    sendJBDResponse(0x14, scd, 2);
+                case 0x14: { // 60% capacity voltage (3290mV = 0x0CDA)
+                    uint8_t val[2] = {0x0C, 0xDA};
+                    sendJBDResponse(0x14, val, 2);
                     break;
                 }
-                case 0x15: { // Manufacture Date
-                    uint8_t mfgDate[2] = {0x30, 0xAA};
-                    sendJBDResponse(0x15, mfgDate, 2);
+                case 0x15: { // 40% capacity voltage (3270mV = 0x0CC6)
+                    uint8_t val[2] = {0x0C, 0xC6};
+                    sendJBDResponse(0x15, val, 2);
                     break;
                 }
-                case 0x16: { // Serial Number String
-                    const char* sn = "BS-26A-072-005";
-                    sendJBDResponse(0x16, (const uint8_t*)sn, strlen(sn));
+                case 0x16: { // 20% capacity voltage (3200mV = 0x0C80)
+                    uint8_t val[2] = {0x0C, 0x80};
+                    sendJBDResponse(0x16, val, 2);
                     break;
                 }
-                case 0x17: { // Bluetooth Name String
-                    const char* btName = "BS-26A-072-005";
-                    sendJBDResponse(0x17, (const uint8_t*)btName, strlen(btName));
+                case 0x17: { // 0% capacity voltage (2900mV = 0x0B54)
+                    uint8_t val[2] = {0x0B, 0x54};
+                    sendJBDResponse(0x17, val, 2);
                     break;
                 }
-                case 0x18: { // Bluetooth PIN String
-                    sendJBDResponse(0x18, (const uint8_t*)g_pin, strlen(g_pin));
+                case 0x18: { // Chg Overtemp (55C = 3281 = 0x0CD1)
+                    uint8_t val[2] = {0x0C, 0xD1};
+                    sendJBDResponse(0x18, val, 2);
                     break;
                 }
-                case 0x19: { // User Data / Barcode String
-                    const char* uData = "BS-26A-072-005";
-                    sendJBDResponse(0x19, (const uint8_t*)uData, strlen(uData));
+                case 0x19: { // Chg Overtemp Release (50C = 3231 = 0x0C9F)
+                    uint8_t val[2] = {0x0C, 0x9F};
+                    sendJBDResponse(0x19, val, 2);
                     break;
                 }
-                case 0x20: { // High Cell Voltage Alarm (3600mV)
-                    uint8_t v[2] = {0x0E, 0x10};
-                    sendJBDResponse(0x20, v, 2);
+                case 0x1A: { // Chg Undertemp (0C = 2731 = 0x0AAB)
+                    uint8_t val[2] = {0x0A, 0xAB};
+                    sendJBDResponse(0x1A, val, 2);
                     break;
                 }
-                case 0x21: { // High Cell Voltage Alarm Release (3450mV)
-                    uint8_t v[2] = {0x0D, 0x7A};
-                    sendJBDResponse(0x21, v, 2);
+                case 0x1B: { // Chg Undertemp Release (5C = 2781 = 0x0ADD)
+                    uint8_t val[2] = {0x0A, 0xDD};
+                    sendJBDResponse(0x1B, val, 2);
                     break;
                 }
-                case 0x22: { // Low Cell Voltage Alarm (2700mV)
-                    uint8_t v[2] = {0x0A, 0x8C};
-                    sendJBDResponse(0x22, v, 2);
+                case 0x1C: { // Dsg Overtemp (65C = 3381 = 0x0D35)
+                    uint8_t val[2] = {0x0D, 0x35};
+                    sendJBDResponse(0x1C, val, 2);
                     break;
                 }
-                case 0x23: { // Low Cell Voltage Alarm Release (2900mV)
-                    uint8_t v[2] = {0x0B, 0x54};
-                    sendJBDResponse(0x23, v, 2);
+                case 0x1D: { // Dsg Overtemp Release (55C = 3281 = 0x0CD1)
+                    uint8_t val[2] = {0x0C, 0xD1};
+                    sendJBDResponse(0x1D, val, 2);
+                    break;
+                }
+                case 0x1E: { // Dsg Undertemp (-20C = 2531 = 0x09E3)
+                    uint8_t val[2] = {0x09, 0xE3};
+                    sendJBDResponse(0x1E, val, 2);
+                    break;
+                }
+                case 0x1F: { // Dsg Undertemp Release (-10C = 2631 = 0x0A47)
+                    uint8_t val[2] = {0x0A, 0x47};
+                    sendJBDResponse(0x1F, val, 2);
+                    break;
+                }
+                case 0x20: { // Pack Overvoltage (29.20V = 2920 = 0x0B68)
+                    uint8_t val[2] = {0x0B, 0x68};
+                    sendJBDResponse(0x20, val, 2);
+                    break;
+                }
+                case 0x21: { // Pack Overvoltage Release (28.00V = 2800 = 0x0AF0)
+                    uint8_t val[2] = {0x0A, 0xF0};
+                    sendJBDResponse(0x21, val, 2);
+                    break;
+                }
+                case 0x22: { // Pack Undervoltage (20.00V = 2000 = 0x07D0)
+                    uint8_t val[2] = {0x07, 0xD0};
+                    sendJBDResponse(0x22, val, 2);
+                    break;
+                }
+                case 0x23: { // Pack Undervoltage Release (22.40V = 2240 = 0x08C0)
+                    uint8_t val[2] = {0x08, 0xC0};
+                    sendJBDResponse(0x23, val, 2);
                     break;
                 }
                 case 0x24: { // Cell Overvoltage Protection (3650mV = 0x0E42)
@@ -426,29 +442,29 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                     sendJBDResponse(0x27, cuvpRel, 2);
                     break;
                 }
-                case 0x28: { // Pack Overvoltage Protection (29200mV = 0x7210)
-                    uint8_t v[2] = {0x72, 0x10};
-                    sendJBDResponse(0x28, v, 2);
+                case 0x28: { // Charge Overcurrent (50.00A = 5000 = 0x1388)
+                    uint8_t chgOc[2] = {0x13, 0x88};
+                    sendJBDResponse(0x28, chgOc, 2);
                     break;
                 }
-                case 0x29: { // Pack Overvoltage Release (28000mV = 0x6D60)
-                    uint8_t v[2] = {0x6D, 0x60};
-                    sendJBDResponse(0x29, v, 2);
+                case 0x29: { // Discharge Overcurrent (100.00A = 10000 = 0x2710)
+                    uint8_t dsgOc[2] = {0x27, 0x10};
+                    sendJBDResponse(0x29, dsgOc, 2);
                     break;
                 }
-                case 0x2A: { // Pack Undervoltage Protection (20000mV = 0x4E20)
-                    uint8_t v[2] = {0x4E, 0x20};
-                    sendJBDResponse(0x2A, v, 2);
+                case 0x2A: { // Balance Start Voltage (3400mV = 0x0D48)
+                    uint8_t b[2] = {0x0D, 0x48};
+                    sendJBDResponse(0x2A, b, 2);
                     break;
                 }
-                case 0x2B: { // Pack Undervoltage Release (22400mV = 0x5780)
-                    uint8_t v[2] = {0x57, 0x80};
-                    sendJBDResponse(0x2B, v, 2);
+                case 0x2B: { // Balance Window (10mV = 0x000A)
+                    uint8_t b[2] = {0x00, 0x0A};
+                    sendJBDResponse(0x2B, b, 2);
                     break;
                 }
-                case 0x2C: { // Chg High Temp (55C = 3281 = 0x0CD1)
-                    uint8_t t[2] = {0x0C, 0xD1};
-                    sendJBDResponse(0x2C, t, 2);
+                case 0x2C: { // Shunt Resistor (0.5mOhm = 5 = 0x0005)
+                    uint8_t sh[2] = {0x00, 0x05};
+                    sendJBDResponse(0x2C, sh, 2);
                     break;
                 }
                 case 0x2D: { // Function Configuration Mask
@@ -456,44 +472,89 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                     sendJBDResponse(0x2D, fnCfg, 2);
                     break;
                 }
-                case 0x2E: { // Chg Low Temp (0C = 2731 = 0x0AAB)
-                    uint8_t t[2] = {0x0A, 0xAB};
-                    sendJBDResponse(0x2E, t, 2);
+                case 0x2E: { // NTC Configuration (NTC1 & NTC2 enabled)
+                    uint8_t ntc[2] = {0x00, 0x03};
+                    sendJBDResponse(0x2E, ntc, 2);
                     break;
                 }
-                case 0x2F: { // Chg Low Temp Release (5C = 2781 = 0x0ADD)
-                    uint8_t t[2] = {0x0A, 0xDD};
-                    sendJBDResponse(0x2F, t, 2);
+                case 0x2F: { // Cell Count (8 cells)
+                    uint8_t cnt[2] = {0x00, 0x08};
+                    sendJBDResponse(0x2F, cnt, 2);
                     break;
                 }
-                case 0x30: { // Dischg High Temp (65C = 3381 = 0x0D35)
-                    uint8_t t[2] = {0x0D, 0x35};
-                    sendJBDResponse(0x30, t, 2);
+                case 0x30: { // FET Control
+                    uint8_t val[2] = {0x00, 0x01};
+                    sendJBDResponse(0x30, val, 2);
                     break;
                 }
-                case 0x31: { // Dischg High Temp Release (55C = 3281 = 0x0CD1)
-                    uint8_t t[2] = {0x0C, 0xD1};
-                    sendJBDResponse(0x31, t, 2);
+                case 0x31: { // LED Timer
+                    uint8_t val[2] = {0x00, 0x05};
+                    sendJBDResponse(0x31, val, 2);
                     break;
                 }
-                case 0x32: { // Dischg Low Temp (-20C = 2531 = 0x09E3)
-                    uint8_t t[2] = {0x09, 0xE3};
-                    sendJBDResponse(0x32, t, 2);
+                case 0x32: { // Capacity cycle estimate
+                    uint8_t val[2] = {0x00, 0x00};
+                    sendJBDResponse(0x32, val, 2);
                     break;
                 }
-                case 0x33: { // Dischg Low Temp Release (-10C = 2631 = 0x0A47)
-                    uint8_t t[2] = {0x0A, 0x47};
-                    sendJBDResponse(0x33, t, 2);
+                case 0x36: { // Secondary Cell OVP (3700mV)
+                    uint8_t val[2] = {0x0E, 0x74};
+                    sendJBDResponse(0x36, val, 2);
                     break;
                 }
-                case 0x34: { // Balance Start Voltage (3400mV = 0x0D48)
-                    uint8_t b[2] = {0x0D, 0x48};
-                    sendJBDResponse(0x34, b, 2);
+                case 0x37: { // Secondary Cell UVP (2400mV)
+                    uint8_t val[2] = {0x09, 0x60};
+                    sendJBDResponse(0x37, val, 2);
                     break;
                 }
-                case 0x35: { // Balance Delta (10mV = 0x000A)
-                    uint8_t b[2] = {0x00, 0x0A};
-                    sendJBDResponse(0x35, b, 2);
+                case 0x38: { // SC & DSGOC2
+                    uint8_t val[2] = {0x02, 0x22};
+                    sendJBDResponse(0x38, val, 2);
+                    break;
+                }
+                case 0x3A: { // Chg temp delays (2s, 2s)
+                    uint8_t val[2] = {0x02, 0x02};
+                    sendJBDResponse(0x3A, val, 2);
+                    break;
+                }
+                case 0x3B: { // Dsg temp delays (2s, 2s)
+                    uint8_t val[2] = {0x02, 0x02};
+                    sendJBDResponse(0x3B, val, 2);
+                    break;
+                }
+                case 0x3C: { // Pack voltage delays (2s, 2s)
+                    uint8_t val[2] = {0x02, 0x02};
+                    sendJBDResponse(0x3C, val, 2);
+                    break;
+                }
+                case 0x3D: { // Cell voltage delays (2s, 2s)
+                    uint8_t val[2] = {0x02, 0x02};
+                    sendJBDResponse(0x3D, val, 2);
+                    break;
+                }
+                case 0x3E: { // Chg overcurrent delays (5s, 32s)
+                    uint8_t val[2] = {0x05, 0x20};
+                    sendJBDResponse(0x3E, val, 2);
+                    break;
+                }
+                case 0x3F: { // Dsg overcurrent delays (5s, 32s)
+                    uint8_t val[2] = {0x05, 0x20};
+                    sendJBDResponse(0x3F, val, 2);
+                    break;
+                }
+                case 0xA0: { // Manufacturer Name
+                    const char* mfg = "Jiabaida";
+                    sendJBDResponse(0xA0, (const uint8_t*)mfg, strlen(mfg));
+                    break;
+                }
+                case 0xA1: { // Device Model String
+                    const char* dev = "BS-26A-072-005";
+                    sendJBDResponse(0xA1, (const uint8_t*)dev, strlen(dev));
+                    break;
+                }
+                case 0xA2: { // Barcode String
+                    const char* hw = "BS-26A-072-005";
+                    sendJBDResponse(0xA2, (const uint8_t*)hw, strlen(hw));
                     break;
                 }
                 case 0xAA: { // Error Counts (11 U16 = 22 bytes zeroes)
