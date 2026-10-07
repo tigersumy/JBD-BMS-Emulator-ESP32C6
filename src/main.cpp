@@ -77,6 +77,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         g_deviceConnected = true;
         setLedColor(0, 35, 0); // GREEN: Connected
         Serial.printf("\n[BLE] *** Client connected! Peer address: %s ***\n", connInfo.getAddress().toString().c_str());
+        pServer->updateConnParams(connInfo.getConnHandle(), 12, 24, 0, 200);
     }
 
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
