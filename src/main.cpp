@@ -5,7 +5,7 @@
 // ============================================================================
 // Device & BLE Profile Configuration
 // ============================================================================
-#define BLE_DEVICE_NAME       "BS-26A-072-005"
+#define BLE_DEVICE_NAME       "JBD-BS-26A-072-005"
 #define SERVICE_UUID          ((uint16_t)0xFF00)
 #define NOTIFY_CHAR_UUID      ((uint16_t)0xFF01)
 #define WRITE_CHAR_UUID       ((uint16_t)0xFF02)
