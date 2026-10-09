@@ -6,13 +6,13 @@
 // Device & BLE Profile Configuration
 // ============================================================================
 #define BLE_DEVICE_NAME       "BS-26A-072-005"
-#define SERVICE_UUID          "0000FF00-0000-1000-8000-00805F9B34FB"
-#define NOTIFY_CHAR_UUID      "0000FF01-0000-1000-8000-00805F9B34FB"
-#define WRITE_CHAR_UUID       "0000FF02-0000-1000-8000-00805F9B34FB"
+#define SERVICE_UUID          ((uint16_t)0xFF00)
+#define NOTIFY_CHAR_UUID      ((uint16_t)0xFF01)
+#define WRITE_CHAR_UUID       ((uint16_t)0xFF02)
 
-#define SERVICE_FFF0_UUID     "0000FFF0-0000-1000-8000-00805F9B34FB"
-#define NOTIFY_FFF1_UUID      "0000FFF1-0000-1000-8000-00805F9B34FB"
-#define WRITE_FFF2_UUID       "0000FFF2-0000-1000-8000-00805F9B34FB"
+#define SERVICE_FFF0_UUID     ((uint16_t)0xFFF0)
+#define NOTIFY_FFF1_UUID      ((uint16_t)0xFFF1)
+#define WRITE_FFF2_UUID       ((uint16_t)0xFFF2)
 
 // Onboard WS2812 RGB LED for WeAct Studio ESP32-C6 Mini (GPIO 8)
 #ifndef RGB_LED_PIN
@@ -616,25 +616,25 @@ void setup() {
     pServer->setCallbacks(new ServerCallbacks());
 
     // 1. Primary Service 0xFF00 (Classic & Standard JBD / Xiaoxiang)
-    NimBLEService* pService = pServer->createService(SERVICE_UUID);
+    NimBLEService* pService = pServer->createService(NimBLEUUID(SERVICE_UUID));
     pNotifyChar = pService->createCharacteristic(
-        NOTIFY_CHAR_UUID,
+        NimBLEUUID(NOTIFY_CHAR_UUID),
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
     );
     pWriteChar = pService->createCharacteristic(
-        WRITE_CHAR_UUID,
+        NimBLEUUID(WRITE_CHAR_UUID),
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
     );
     pWriteChar->setCallbacks(new WriteCallbacks());
 
     // 2. Secondary Service 0xFFF0 (Jiabaida New Revision)
-    NimBLEService* pServiceFff0 = pServer->createService(SERVICE_FFF0_UUID);
+    NimBLEService* pServiceFff0 = pServer->createService(NimBLEUUID(SERVICE_FFF0_UUID));
     pNotifyFff1 = pServiceFff0->createCharacteristic(
-        NOTIFY_FFF1_UUID,
+        NimBLEUUID(NOTIFY_FFF1_UUID),
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
     );
     pWriteFff2 = pServiceFff0->createCharacteristic(
-        WRITE_FFF2_UUID,
+        NimBLEUUID(WRITE_FFF2_UUID),
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
     );
     pWriteFff2->setCallbacks(new WriteCallbacks());
@@ -651,15 +651,38 @@ void setup() {
     );
     pMfgChar->setValue("JBD BMS");
 
+    NimBLECharacteristic* pSerialChar = pDevInfo->createCharacteristic(
+        NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ
+    );
+    pSerialChar->setValue("BS-26A-072-005");
+
+    NimBLECharacteristic* pFwChar = pDevInfo->createCharacteristic(
+        NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ
+    );
+    pFwChar->setValue("V1.3");
+
+    NimBLECharacteristic* pHwChar = pDevInfo->createCharacteristic(
+        NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ
+    );
+    pHwChar->setValue("V1.0");
+
     // Start Services
     pServer->start();
 
-    // Universal BLE Advertising (Service 0xFF00 + Device Name)
+    // Universal BLE Advertising (16-bit Service 0xFF00 + Name + Scan Response)
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->setName(BLE_DEVICE_NAME);
-    pAdvertising->addServiceUUID(pService->getUUID());
-    pAdvertising->addServiceUUID(pServiceFff0->getUUID());
-    pAdvertising->enableScanResponse(true);
+    
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06); // General Discoverable + BR/EDR Not Supported
+    advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
+    advData.setName(BLE_DEVICE_NAME);
+
+    NimBLEAdvertisementData scanData;
+    scanData.setName(BLE_DEVICE_NAME);
+    scanData.setCompleteServices(NimBLEUUID(SERVICE_FFF0_UUID));
+
+    pAdvertising->setAdvertisementData(advData);
+    pAdvertising->setScanResponseData(scanData);
     pAdvertising->setMinInterval(32); // 20ms
     pAdvertising->setMaxInterval(64); // 40ms
     pAdvertising->start();
