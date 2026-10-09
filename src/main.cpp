@@ -5,7 +5,7 @@
 // ============================================================================
 // Device & BLE Profile Configuration
 // ============================================================================
-#define BLE_DEVICE_NAME       "JBD-BS-26A-072-005"
+#define BLE_DEVICE_NAME       "BS-26A-072-005"
 #define SERVICE_UUID          ((uint16_t)0xFF00)
 #define NOTIFY_CHAR_UUID      ((uint16_t)0xFF01)
 #define WRITE_CHAR_UUID       ((uint16_t)0xFF02)
@@ -596,18 +596,18 @@ void setup() {
     Serial.println("=======================================================\n");
 
     // Configure Custom Bluetooth MAC Address (A5:C2:3A:26:F2:C2)
-    esp_base_mac_addr_set(TARGET_BT_MAC);
-    esp_iface_mac_addr_set(TARGET_BT_MAC, ESP_MAC_BT);
+    uint8_t custom_base_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC0};
+    esp_base_mac_addr_set(custom_base_mac);
+    uint8_t custom_bt_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+    esp_iface_mac_addr_set(custom_bt_mac, ESP_MAC_BT);
 
     // Initialize NimBLE Device
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setMTU(512);
     NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum TX power (+9dBm)
 
-    // Set Security (Passkey 123456)
-    NimBLEDevice::setSecurityAuth(true, true, true); // Bonding, MITM protection, Secure Connections
-    NimBLEDevice::setSecurityPasskey(123456);
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
+    // Open pairing for standard JBD app compatibility (app-layer PIN verification)
+    NimBLEDevice::setSecurityAuth(false, false, false);
 
     Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
 
@@ -669,13 +669,24 @@ void setup() {
     // Start Services
     pServer->start();
 
-    // Universal BLE Advertising (16-bit Service 0xFF00 + 0xFFF0 + Device Name)
+    // Configure Advertising for iOS CoreBluetooth (Strict <= 31 bytes per packet)
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->setName(BLE_DEVICE_NAME);
-    pAdvertising->addServiceUUID(NimBLEUUID(SERVICE_UUID));
-    pAdvertising->addServiceUUID(NimBLEUUID(SERVICE_FFF0_UUID));
-    pAdvertising->enableScanResponse(true);
-    pAdvertising->setMinInterval(32); // 20ms
+
+    // Primary Advertisement Packet (25 bytes <= 31 bytes): Flags + Complete Name + 16-bit Service UUID
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06); // General Discoverable + BR_EDR_NOT_SUPPORTED
+    advData.setName(BLE_DEVICE_NAME);
+    advData.setCompleteServices(NimBLEUUID((uint16_t)0xFF00));
+
+    // Scan Response Packet (24 bytes <= 31 bytes): 128-bit UUID + pure 6-byte MAC in Manufacturer Data
+    NimBLEAdvertisementData scanData;
+    scanData.setCompleteServices(NimBLEUUID("0000FF00-0000-1000-8000-00805F9B34FB"));
+    uint8_t mfgBytes[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+    scanData.setManufacturerData(std::string((char*)mfgBytes, 6));
+
+    pAdvertising->setAdvertisementData(advData);
+    pAdvertising->setScanResponseData(scanData);
+    pAdvertising->setMinInterval(32); // 20ms advertising interval for instant discovery
     pAdvertising->setMaxInterval(64); // 40ms
     pAdvertising->start();
 
