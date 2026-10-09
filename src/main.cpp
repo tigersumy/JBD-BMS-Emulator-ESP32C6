@@ -708,72 +708,93 @@ void loop() {
         float dt_sec = (now - g_lastSimTime) / 1000.0f;
         g_lastSimTime = now;
 
-        // Realistic small current jitter (+/- 0.10A)
         static int stepCount = 0;
         stepCount++;
-        float jitter = ((stepCount % 5) - 2) * 0.05f;
-        int drift = (stepCount % 3 == 0) ? 1 : ((stepCount % 3 == 1) ? -1 : 0);
+
+        // Realistic sinusoidal inverter load ripple + small ADC noise
+        float t = stepCount * 0.2f;
+        float wave1 = sinf(t * 0.8f);
+        float wave2 = cosf(t * 1.3f);
+        float currentJitter = (wave1 * 0.35f) + (wave2 * 0.15f); // +/- 0.50A dynamic ripple
 
         if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
-            // Active Discharge (-17A)
-            float currentA = -17.0f + jitter;
-            g_bms.current_10ma = (int16_t)(currentA * 100.0f); // -1700 (10mA)
+            // Active Discharge (-17A nominal with realistic dynamic load curve)
+            float currentA = -17.0f + currentJitter;
+            g_bms.current_10ma = (int16_t)(currentA * 100.0f);
 
             // Integrate capacity: delta_Ah = I * dt
-            float delta_mah = (17.0f * 1000.0f) * (dt_sec / 3600.0f);
+            float delta_mah = (fabs(currentA) * 1000.0f) * (dt_sec / 3600.0f);
             g_bms.fractional_mah += delta_mah;
             while (g_bms.fractional_mah >= 10.0f) {
                 if (g_bms.remain_cap_10mah > 0) g_bms.remain_cap_10mah--;
                 g_bms.fractional_mah -= 10.0f;
             }
 
-            // Cell voltages sag under 17A discharge (~3.28V)
-            g_bms.cell_mv[0] = 3280 + drift;
-            g_bms.cell_mv[1] = 3283 - drift;
-            g_bms.cell_mv[2] = 3279 + drift;
-            g_bms.cell_mv[3] = 3282 - drift;
-            g_bms.cell_mv[4] = 3278 + drift;
-            g_bms.cell_mv[5] = 3284 - drift;
-            g_bms.cell_mv[6] = 3280 + drift;
-            g_bms.cell_mv[7] = 3281 - drift;
-            g_bms.ntc1_temp_01k = 2991; // 26.0 °C
-            g_bms.ntc2_temp_01k = 2986; // 25.5 °C
+            // Cell voltages sag under 17A load (~3.28V) with realistic cell delta & live breathing (+/- 4..7 mV)
+            int d1 = (int)(wave1 * 4.0f);
+            int d2 = (int)(wave2 * 3.5f);
+            int d3 = (int)(sinf(t * 0.5f) * 3.0f);
+
+            g_bms.cell_mv[0] = 3280 + d1;
+            g_bms.cell_mv[1] = 3284 - d2;
+            g_bms.cell_mv[2] = 3279 + d2;
+            g_bms.cell_mv[3] = 3283 - d1;
+            g_bms.cell_mv[4] = 3278 + d3;
+            g_bms.cell_mv[5] = 3285 - d3;
+            g_bms.cell_mv[6] = 3281 + d1 - d2;
+            g_bms.cell_mv[7] = 3282 + d2 - d3;
+
+            g_bms.ntc1_temp_01k = 2991 + (int)(wave1 * 2.0f); // ~26.0 °C
+            g_bms.ntc2_temp_01k = 2986 + (int)(wave2 * 2.0f); // ~25.5 °C
 
             uint32_t totalMv = 0;
             for (int i = 0; i < 8; ++i) totalMv += g_bms.cell_mv[i];
             g_bms.pack_voltage_10mv = totalMv / 10;
         } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
-            // Active Charge (+25A)
-            float currentA = 25.0f + jitter;
+            // Active Charge (+25A nominal with dynamic charger ripple)
+            float currentA = 25.0f + currentJitter;
             g_bms.current_10ma = (int16_t)(currentA * 100.0f);
 
-            float delta_mah = (25.0f * 1000.0f) * (dt_sec / 3600.0f);
+            float delta_mah = (currentA * 1000.0f) * (dt_sec / 3600.0f);
             g_bms.fractional_mah += delta_mah;
             while (g_bms.fractional_mah >= 10.0f) {
                 if (g_bms.remain_cap_10mah < g_bms.nominal_cap_10mah) g_bms.remain_cap_10mah++;
                 g_bms.fractional_mah -= 10.0f;
             }
 
-            // Cell voltages rise during charging (~3.45V)
-            g_bms.cell_mv[0] = 3450 + drift;
-            g_bms.cell_mv[1] = 3452 - drift;
-            g_bms.cell_mv[2] = 3448 + drift;
-            g_bms.cell_mv[3] = 3451 - drift;
-            g_bms.cell_mv[4] = 3449 + drift;
-            g_bms.cell_mv[5] = 3453 - drift;
-            g_bms.cell_mv[6] = 3450 + drift;
-            g_bms.cell_mv[7] = 3451 - drift;
-            g_bms.ntc1_temp_01k = 2986; // 25.5 °C
-            g_bms.ntc2_temp_01k = 2981; // 25.0 °C
+            // Cell voltages rise during charging (~3.45V) with dynamic ripples (+/- 4..6 mV)
+            int d1 = (int)(wave1 * 4.0f);
+            int d2 = (int)(wave2 * 3.5f);
+            int d3 = (int)(sinf(t * 0.5f) * 3.0f);
+
+            g_bms.cell_mv[0] = 3450 + d1;
+            g_bms.cell_mv[1] = 3453 - d2;
+            g_bms.cell_mv[2] = 3448 + d2;
+            g_bms.cell_mv[3] = 3452 - d1;
+            g_bms.cell_mv[4] = 3449 + d3;
+            g_bms.cell_mv[5] = 3454 - d3;
+            g_bms.cell_mv[6] = 3450 + d1 - d2;
+            g_bms.cell_mv[7] = 3451 + d2 - d3;
+
+            g_bms.ntc1_temp_01k = 2986 + (int)(wave1 * 2.0f); // 25.5 °C
+            g_bms.ntc2_temp_01k = 2981 + (int)(wave2 * 2.0f); // 25.0 °C
 
             uint32_t totalMv = 0;
             for (int i = 0; i < 8; ++i) totalMv += g_bms.cell_mv[i];
             g_bms.pack_voltage_10mv = totalMv / 10;
         } else {
-            // Idle Mode (0A)
+            // Idle Mode (0.00 A) - realistic resting LiFePO4 cells with micro-drift
             g_bms.current_10ma = 0;
-            for (int i = 0; i < 8; ++i) g_bms.cell_mv[i] = 3320;
-            g_bms.pack_voltage_10mv = 2656; // 8 * 3.32V
+            int n = (int)(wave1 * 2.0f);
+            g_bms.cell_mv[0] = 3320 + n;
+            g_bms.cell_mv[1] = 3323 - n;
+            g_bms.cell_mv[2] = 3319 + n;
+            g_bms.cell_mv[3] = 3322 - n;
+            g_bms.cell_mv[4] = 3318 + n;
+            g_bms.cell_mv[5] = 3324 - n;
+            g_bms.cell_mv[6] = 3320;
+            g_bms.cell_mv[7] = 3321;
+            g_bms.pack_voltage_10mv = 2656 + n;
             g_bms.ntc1_temp_01k = 2981; // 25.0 °C
             g_bms.ntc2_temp_01k = 2976; // 24.5 °C
         }
