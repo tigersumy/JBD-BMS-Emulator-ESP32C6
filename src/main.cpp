@@ -669,20 +669,12 @@ void setup() {
     // Start Services
     pServer->start();
 
-    // Universal BLE Advertising (16-bit Service 0xFF00 + Name + Scan Response)
+    // Universal BLE Advertising (16-bit Service 0xFF00 + 0xFFF0 + Device Name)
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    
-    NimBLEAdvertisementData advData;
-    advData.setFlags(0x06); // General Discoverable + BR/EDR Not Supported
-    advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
-    advData.setName(BLE_DEVICE_NAME);
-
-    NimBLEAdvertisementData scanData;
-    scanData.setName(BLE_DEVICE_NAME);
-    scanData.setCompleteServices(NimBLEUUID(SERVICE_FFF0_UUID));
-
-    pAdvertising->setAdvertisementData(advData);
-    pAdvertising->setScanResponseData(scanData);
+    pAdvertising->setName(BLE_DEVICE_NAME);
+    pAdvertising->addServiceUUID(NimBLEUUID(SERVICE_UUID));
+    pAdvertising->addServiceUUID(NimBLEUUID(SERVICE_FFF0_UUID));
+    pAdvertising->enableScanResponse(true);
     pAdvertising->setMinInterval(32); // 20ms
     pAdvertising->setMaxInterval(64); // 40ms
     pAdvertising->start();
