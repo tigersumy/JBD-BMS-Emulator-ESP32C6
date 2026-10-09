@@ -34,6 +34,10 @@ This project enables safe, rapid bench testing and calibration of inverter gatew
   - Full Parameter EEPROM Map (`0x10`..`0x3F`, `0xAA` error logs) for seamless "About Battery" / "Parameters" navigation.
   - **Extended AFE RAM Memory Protocol (`0xFA`)**: Full support for Android JBD app direct memory reading (offset `0x58` cell voltages in mV, chip config, serial).
   - **Universal ATT MTU Chunking**: 20-byte packet streaming with inter-frame delays for 100% reliable data parsing across both Android (MTU 23) and iOS (MTU 512).
+- **🍏 iOS CoreBluetooth & Official JBD BMS App Compatibility**:
+  - **Embedded MAC in Manufacturer Data**: iOS CoreBluetooth hides raw hardware MACs. The emulator injects the 6-byte MAC (`A5:C2:3A:26:F2:C2`) into the `Manufacturer Data` of the **Scan Response Packet**, allowing the official JBD BMS iOS app to discover and display the device instantly.
+  - **Primary 16-bit Service UUID `0xFF00`**: Included in the primary advertising payload (25 bytes $\le$ 31 bytes) to satisfy iOS hardware background scanning filters.
+  - **Open Pairing Security**: Utilizes application-level PIN handshake (`123456`) without triggering OS-level SMP bonding conflicts.
 - **Realistic 8S LiFePO4 Battery Physics Simulation**:
   - Load Current: **`-17.00 A`** (with dynamic $\pm 0.1\text{A}$ jitter)
   - Power Draw: **`~447 W`** ($26.24\text{ V} \times 17.0\text{ A}$)
