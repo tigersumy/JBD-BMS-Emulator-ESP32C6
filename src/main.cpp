@@ -1,10 +1,11 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <esp_mac.h>
 
 // ============================================================================
 // Device & BLE Profile Configuration
 // ============================================================================
-#define BLE_DEVICE_NAME       "DB24SF01"
+#define BLE_DEVICE_NAME       "BS-26A-072-005"
 #define SERVICE_UUID          "0000FF00-0000-1000-8000-00805F9B34FB"
 #define NOTIFY_CHAR_UUID      "0000FF01-0000-1000-8000-00805F9B34FB"
 #define WRITE_CHAR_UUID       "0000FF02-0000-1000-8000-00805F9B34FB"
@@ -20,6 +21,9 @@
 
 // PIN Code for JBD Authentication (System passkey & App-layer PIN)
 #define JBD_PIN_CODE "123456"
+
+// Target Bluetooth MAC Address
+const uint8_t TARGET_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
 
 // ============================================================================
 // RGB LED Control with 50% Brightness Scaling
@@ -38,7 +42,7 @@ enum OperationMode {
 };
 
 // ============================================================================
-// BMS State Structure (DB24SF01 / 8S200A 24V LiFePO4 Profile)
+// BMS State Structure (BS-26A-072-005 / 8S200A 24V LiFePO4 Profile)
 // ============================================================================
 struct BMSState {
     uint16_t pack_voltage_10mv = 2624;   // 26.24 V under 17A load (8S LiFePO4)
@@ -58,7 +62,7 @@ struct BMSState {
     uint16_t ntc1_temp_01k     = 2991;   // 26.0 °C (2731 + 260)
     uint16_t ntc2_temp_01k     = 2986;   // 25.5 °C (2731 + 255)
     uint16_t cell_mv[8]        = {3280, 3283, 3279, 3282, 3278, 3284, 3280, 3281};
-    char     device_name[32]   = "DB24SF01";
+    char     device_name[32]   = "BS-26A-072-005";
 
     // Mode and Simulation state
     OperationMode mode         = MODE_DISCHARGE;
@@ -260,19 +264,19 @@ void sendDeviceName() {
 
 // Build and send Barcode / Serial Info (Register 0xA0)
 void sendBarcode() {
-    const char* barcode = "DB24SF01-202405";
+    const char* barcode = "BS-26A-072-005";
     sendJBDResponse(0xA0, (const uint8_t*)barcode, strlen(barcode));
 }
 
 // Build and send Manufacturer Name (Register 0xA1)
 void sendManufacturerName() {
-    const char* mfg = "8S200A";
+    const char* mfg = "JBD BMS";
     sendJBDResponse(0xA1, (const uint8_t*)mfg, strlen(mfg));
 }
 
 // Build and send Hardware Info (Register 0xA2)
 void sendHardwareVersion() {
-    const char* hw = "DB24SF01 V1.0";
+    const char* hw = "BS-26A-072-005 (8S200A)";
     sendJBDResponse(0xA2, (const uint8_t*)hw, strlen(hw));
 }
 
@@ -579,6 +583,9 @@ void setup() {
     Serial.println("   ESP32-C6 JBD BMS BLE Emulator (DB24SF01 / 8S200A)   ");
     Serial.println("=======================================================");
     Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
+    Serial.printf("Target MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                  TARGET_BT_MAC[0], TARGET_BT_MAC[1], TARGET_BT_MAC[2],
+                  TARGET_BT_MAC[3], TARGET_BT_MAC[4], TARGET_BT_MAC[5]);
     Serial.printf("Security PIN: %s (Passkey: 123456)\n", JBD_PIN_CODE);
     Serial.printf("Pack Voltage: %.2fV | SOC: %u%% | Cells: %uS\n", 
                   g_bms.pack_voltage_10mv / 100.0f, g_bms.soc_percent, g_bms.cell_count);
@@ -587,6 +594,10 @@ void setup() {
                   (g_bms.fet_status & 0x01) ? "ON" : "OFF",
                   (g_bms.fet_status & 0x02) ? "ON" : "OFF");
     Serial.println("=======================================================\n");
+
+    // Configure Custom Bluetooth MAC Address (A5:C2:3A:26:F2:C2)
+    esp_base_mac_addr_set(TARGET_BT_MAC);
+    esp_iface_mac_addr_set(TARGET_BT_MAC, ESP_MAC_BT);
 
     // Initialize NimBLE Device
     NimBLEDevice::init(BLE_DEVICE_NAME);
@@ -633,12 +644,12 @@ void setup() {
     NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
         NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
     );
-    pModelChar->setValue("DB24SF01 V1.0");
+    pModelChar->setValue("BS-26A-072-005");
 
     NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
         NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
     );
-    pMfgChar->setValue("8S200A");
+    pMfgChar->setValue("JBD BMS");
 
     // Start Services
     pServer->start();
