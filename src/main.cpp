@@ -49,6 +49,7 @@ struct BMSState {
     int16_t  current_10ma      = -1700;  // -17.00 A (17A Discharge)
     uint16_t remain_cap_10mah  = 19400;  // 194.00 Ah
     uint16_t nominal_cap_10mah = 20000;  // 200.00 Ah (8S200A)
+    uint16_t cycle_cap_10mah   = 16000;  // 160.00 Ah (80% of 200Ah)
     uint16_t cycle_count       = 15;     // 15 cycles
     uint16_t prod_date         = 0x30AA; // 2024-05-10
     uint16_t balance_low       = 0x0000; // Balancing bitmask
@@ -284,8 +285,8 @@ void sendHardwareVersion() {
 void sendParameterRegister(uint8_t reg) {
     uint16_t val = 0;
     switch (reg) {
-        case 0x10: val = 3650; break;  // Cell Overvoltage trigger (mV)
-        case 0x11: val = 3550; break;  // Cell Overvoltage release (mV)
+        case 0x10: val = g_bms.nominal_cap_10mah; break;  // Nominal / Design Capacity (10mAh units -> e.g. 30000 = 300.00Ah)
+        case 0x11: val = g_bms.cycle_cap_10mah;   break;  // Cycle Capacity (10mAh units -> e.g. 24000 = 240.00Ah)
         case 0x12: val = 2500; break;  // Cell Undervoltage trigger (mV)
         case 0x13: val = 2800; break;  // Cell Undervoltage release (mV)
         case 0x14: val = 2920; break;  // Pack Overvoltage trigger (10mV)
@@ -315,7 +316,7 @@ void sendParameterRegister(uint8_t reg) {
         case 0x2C: val = 5; break;     // Shunt Resistor (0.5mOhm)
         case 0x2D: val = 0x001F; break;// Function Configuration Mask
         case 0x2E: val = 0x0003; break;// NTC Configuration (NTC1 & NTC2 enabled)
-        case 0x2F: val = 8; break;     // Cell Count (8 cells)
+        case 0x2F: val = g_bms.cell_count; break;     // Cell Count (8 cells)
         default: val = 0; break;
     }
     uint8_t data[2];
@@ -535,7 +536,48 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
         } else if (cmd == 0x5A) {
             // Write Command
             Serial.printf("[JBD CMD] Write Register 0x%02X (dataLen=%u)\n", reg, dataLen);
-            if (reg == 0xE1) {
+            if (reg == 0x10) {
+                // Nominal / Design Capacity (unit: 10mAh)
+                if (dataLen >= 2) {
+                    uint16_t newNom = (uint16_t(buf[4]) << 8) | uint16_t(buf[5]);
+                    if (newNom > 0) {
+                        g_bms.nominal_cap_10mah = newNom;
+                        Serial.printf("[JBD EEPROM] Nominal Capacity updated: %u (%.2f Ah)\n", newNom, newNom / 100.0f);
+                    }
+                }
+                sendJBDResponse(0x10, nullptr, 0, 0x00);
+            } else if (reg == 0x11) {
+                // Cycle Capacity (unit: 10mAh)
+                if (dataLen >= 2) {
+                    uint16_t newCyc = (uint16_t(buf[4]) << 8) | uint16_t(buf[5]);
+                    if (newCyc > 0) {
+                        g_bms.cycle_cap_10mah = newCyc;
+                        Serial.printf("[JBD EEPROM] Cycle Capacity updated: %u (%.2f Ah)\n", newCyc, newCyc / 100.0f);
+                    }
+                }
+                sendJBDResponse(0x11, nullptr, 0, 0x00);
+            } else if (reg == 0xE0) {
+                // Real-time remaining capacity calibration (unit: 10mAh)
+                if (dataLen >= 2) {
+                    uint16_t newRem = (uint16_t(buf[4]) << 8) | uint16_t(buf[5]);
+                    g_bms.remain_cap_10mah = newRem;
+                    if (g_bms.nominal_cap_10mah > 0) {
+                        g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
+                    }
+                    Serial.printf("[JBD RAM] Remaining Capacity calibrated: %u (%.2f Ah, SOC: %u%%)\n", newRem, newRem / 100.0f, g_bms.soc_percent);
+                }
+                sendJBDResponse(0xE0, nullptr, 0, 0x00);
+            } else if (reg == 0x2F) {
+                // Cell Count
+                if (dataLen >= 1) {
+                    uint8_t newCnt = (dataLen >= 2) ? buf[5] : buf[4];
+                    if (newCnt >= 3 && newCnt <= 32) {
+                        g_bms.cell_count = newCnt;
+                        Serial.printf("[JBD EEPROM] Cell Count updated: %uS\n", newCnt);
+                    }
+                }
+                sendJBDResponse(0x2F, nullptr, 0, 0x00);
+            } else if (reg == 0xE1) {
                 // MOSFET Control
                 if (dataLen >= 1) {
                     uint8_t newFetState = buf[4];
