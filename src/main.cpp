@@ -55,13 +55,14 @@ struct BMSState {
     uint16_t balance_low       = 0x0000; // Balancing bitmask
     uint16_t balance_high      = 0x0000;
     uint16_t protection_status = 0x0000; // 0x0000 = Normal / No alarms
-    uint8_t  software_version  = 0x13;   // v13 (matches DB24SF01 version 13)
+    uint8_t  software_version  = 0x76;   // v11.8 (matches live JBD BMS firmware 0x76)
     uint8_t  soc_percent       = 97;     // 97%
     uint8_t  fet_status        = 0x03;   // Bit0: Charge FET (1=ON), Bit1: Discharge FET (1=ON)
     uint8_t  cell_count        = 8;      // 8S LiFePO4 (24V)
-    uint8_t  ntc_count         = 2;      // 2 NTC sensors
+    uint8_t  ntc_count         = 3;      // 3 NTC sensors (NTC1, NTC2, MOS Temp)
     uint16_t ntc1_temp_01k     = 2991;   // 26.0 °C (2731 + 260)
     uint16_t ntc2_temp_01k     = 2986;   // 25.5 °C (2731 + 255)
+    uint16_t ntc3_temp_01k     = 2955;   // 22.4 °C (2731 + 224) - MOS Temp
     uint16_t cell_mv[8]        = {3280, 3283, 3279, 3282, 3278, 3284, 3280, 3281};
     char     device_name[32]   = "BS-26A-072-005";
 
@@ -163,7 +164,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 };
 
 // ============================================================================
-// JBD Protocol Response Helper (Unfragmented full-frame for MTU >= 23)
+// JBD Protocol Response Helper (BLE MTU chunking: 20 bytes per chunk)
 // ============================================================================
 void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, uint8_t status = 0x00) {
     if (!g_deviceConnected) return;
@@ -185,24 +186,34 @@ void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, ui
     frame[5 + payloadLen] = (uint8_t)(crc & 0xFF);
     frame[6 + payloadLen] = 0x77;
 
-    // Send notification immediately on primary and secondary characteristics
-    if (pNotifyChar) {
-        pNotifyChar->setValue(frame, totalLen);
-        pNotifyChar->notify();
-    }
-    if (pNotifyFff1) {
-        pNotifyFff1->setValue(frame, totalLen);
-        pNotifyFff1->notify();
+    // Send notifications in 20-byte chunks matching genuine JBD BLE hardware (MTU=23)
+    const size_t CHUNK_SIZE = 20;
+    for (size_t offset = 0; offset < totalLen && g_deviceConnected; offset += CHUNK_SIZE) {
+        size_t sendLen = totalLen - offset;
+        if (sendLen > CHUNK_SIZE) sendLen = CHUNK_SIZE;
+
+        if (pNotifyChar) {
+            pNotifyChar->setValue(&frame[offset], sendLen);
+            pNotifyChar->notify();
+        }
+        if (pNotifyFff1) {
+            pNotifyFff1->setValue(&frame[offset], sendLen);
+            pNotifyFff1->notify();
+        }
+        if (offset + sendLen < totalLen) {
+            delay(5); // Small inter-chunk pacing to avoid BLE FIFO overrun
+        }
     }
 
     if (Serial) {
-        Serial.printf("[JBD TX -> Reg 0x%02X] (%u bytes)\n", reg, (unsigned int)totalLen);
+        Serial.printf("[JBD TX -> Reg 0x%02X] (%u bytes in %u chunks)\n", 
+                      reg, (unsigned int)totalLen, (unsigned int)((totalLen + CHUNK_SIZE - 1) / CHUNK_SIZE));
     }
 }
 
 // Build and send Basic Info (Register 0x03)
 void sendBasicInfo() {
-    uint8_t data[27];
+    uint8_t data[38]; // 38 bytes (0x26) matching original JBD BMS v11.8+ (45 bytes total frame)
 
     data[0] = (uint8_t)(g_bms.pack_voltage_10mv >> 8);
     data[1] = (uint8_t)(g_bms.pack_voltage_10mv & 0xFF);
@@ -235,13 +246,28 @@ void sendBasicInfo() {
     data[19] = g_bms.soc_percent;
     data[20] = g_bms.fet_status;
     data[21] = g_bms.cell_count;
-    data[22] = g_bms.ntc_count;
+    data[22] = g_bms.ntc_count; // 3 NTC sensors
 
     data[23] = (uint8_t)(g_bms.ntc1_temp_01k >> 8);
     data[24] = (uint8_t)(g_bms.ntc1_temp_01k & 0xFF);
 
     data[25] = (uint8_t)(g_bms.ntc2_temp_01k >> 8);
     data[26] = (uint8_t)(g_bms.ntc2_temp_01k & 0xFF);
+
+    data[27] = (uint8_t)(g_bms.ntc3_temp_01k >> 8);
+    data[28] = (uint8_t)(g_bms.ntc3_temp_01k & 0xFF);
+
+    // Extended factory setting registers (9 bytes tail)
+    // Matches live JBD BMS: 00 00 00 4B 00 4A A5 00 00
+    data[29] = 0x00;
+    data[30] = 0x00;
+    data[31] = 0x00;
+    data[32] = 0x4B;
+    data[33] = (uint8_t)(g_bms.nominal_cap_10mah >> 8);
+    data[34] = (uint8_t)(g_bms.nominal_cap_10mah & 0xFF);
+    data[35] = (uint8_t)(g_bms.remain_cap_10mah >> 8);
+    data[36] = (uint8_t)(g_bms.remain_cap_10mah & 0xFF);
+    data[37] = 0x00;
 
     sendJBDResponse(0x03, data, sizeof(data));
 }
@@ -788,6 +814,7 @@ void loop() {
 
             g_bms.ntc1_temp_01k = 2991 + (int)(wave1 * 2.0f); // ~26.0 °C
             g_bms.ntc2_temp_01k = 2986 + (int)(wave2 * 2.0f); // ~25.5 °C
+            g_bms.ntc3_temp_01k = 3011 + (int)(wave1 * 3.0f); // ~28.0 °C (MOSFET heats up under 17A discharge)
 
             uint32_t totalMv = 0;
             for (int i = 0; i < 8; ++i) totalMv += g_bms.cell_mv[i];
@@ -820,6 +847,7 @@ void loop() {
 
             g_bms.ntc1_temp_01k = 2986 + (int)(wave1 * 2.0f); // 25.5 °C
             g_bms.ntc2_temp_01k = 2981 + (int)(wave2 * 2.0f); // 25.0 °C
+            g_bms.ntc3_temp_01k = 3031 + (int)(wave2 * 3.0f); // ~30.0 °C (MOSFET heats up under 25A charge)
 
             uint32_t totalMv = 0;
             for (int i = 0; i < 8; ++i) totalMv += g_bms.cell_mv[i];
@@ -839,6 +867,7 @@ void loop() {
             g_bms.pack_voltage_10mv = 2656 + n;
             g_bms.ntc1_temp_01k = 2981; // 25.0 °C
             g_bms.ntc2_temp_01k = 2976; // 24.5 °C
+            g_bms.ntc3_temp_01k = 2955; // 22.4 °C (MOSFET ambient resting)
         }
 
         // Calculate SOC (%)
