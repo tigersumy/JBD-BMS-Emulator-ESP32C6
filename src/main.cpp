@@ -230,6 +230,10 @@ uint16_t calculateJbdCRC(const uint8_t* data, size_t len) {
     return (uint16_t)(0x10000 - sum);
 }
 
+static NimBLECharacteristic* s_lastJbdTargetNotifyChar = nullptr;
+static NimBLECharacteristic* s_lastDalyTargetNotifyChar = nullptr;
+static uint16_t s_lastDalyReadCount = 0;
+
 // ============================================================================
 // Server Connection & Security Callbacks (Passkey = 123456)
 // ============================================================================
@@ -243,6 +247,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
         g_deviceConnected = false;
+        s_lastJbdTargetNotifyChar = nullptr;
+        s_lastDalyTargetNotifyChar = nullptr;
+        s_lastDalyReadCount = 0;
         updateStatusLed();
         Serial.printf("[BLE] Client disconnected (reason: %d). Restarting advertising...\n", reason);
         NimBLEDevice::startAdvertising();
@@ -275,8 +282,6 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         }
     }
 };
-
-static NimBLECharacteristic* s_lastJbdTargetNotifyChar = nullptr;
 
 // ============================================================================
 // JBD Protocol Response Helper (BLE MTU chunking: 20 bytes per chunk)
@@ -780,40 +785,22 @@ uint16_t calculateModbusCRC(const uint8_t* data, size_t len) {
     return crc;
 }
 
-// Send BLE frame across all Daly notify characteristics
+// Send BLE frame directly to the subscribed / active Daly notify characteristic
 void sendDalyBleFrame(const uint8_t* frame, size_t len) {
     if (!g_deviceConnected) return;
 
-    if (pDalyNotifyFff1) {
-        pDalyNotifyFff1->setValue((uint8_t*)frame, len);
-        pDalyNotifyFff1->notify();
+    NimBLECharacteristic* target = s_lastDalyTargetNotifyChar;
+    if (!target) {
+        target = pDalyNotifyFff1 ? pDalyNotifyFff1 : pDalyNotifyChar;
     }
-    if (pDalyFff2) {
-        pDalyFff2->setValue((uint8_t*)frame, len);
-    }
-    if (pDalyNotifyChar) {
-        pDalyNotifyChar->setValue((uint8_t*)frame, len);
-        pDalyNotifyChar->notify();
-    }
-    if (pDalyNotifyFff4) {
-        pDalyNotifyFff4->setValue((uint8_t*)frame, len);
-        pDalyNotifyFff4->notify();
-    }
-    if (pDalyNotifyFf01) {
-        pDalyNotifyFf01->setValue((uint8_t*)frame, len);
-        pDalyNotifyFf01->notify();
-    }
-    if (pDalyNusTx) {
-        pDalyNusTx->setValue((uint8_t*)frame, len);
-        pDalyNusTx->notify();
+    if (target) {
+        target->notify(frame, len);
     }
 }
 
 // ============================================================================
 // Daly Modbus Protocol (D2) Implementations (Official Smart BMS App DL-xxxx)
 // ============================================================================
-
-static uint16_t s_lastDalyReadCount = 62;
 
 // Universal Daly Modbus Holding Register Provider (16-bit Big-Endian values)
 uint16_t getDalyHoldingRegister(uint16_t reg) {
@@ -1313,7 +1300,7 @@ void sendDalyCells95() {
         0
     };
     sendDalyResponse(0x95, f1);
-    delay(20);
+    delay(40);
 
     uint8_t f2[8] = {
         2,
@@ -1323,7 +1310,7 @@ void sendDalyCells95() {
         0
     };
     sendDalyResponse(0x95, f2);
-    delay(20);
+    delay(40);
 
     uint8_t f3[8] = {
         3,
@@ -1390,8 +1377,7 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
         Serial.printf("[DALY BLE] Client subscribed to %s (subValue: %u)\n", 
                       pCharacteristic->getUUID().toString().c_str(), subValue);
         if (subValue > 0) {
-            delay(50);
-            sendDalyModbusResponseD2(0x0000, 62);
+            s_lastDalyTargetNotifyChar = pCharacteristic;
         }
     }
 
@@ -1406,6 +1392,17 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
 
         const uint8_t* buf = (const uint8_t*)rxVal.data();
         size_t len = rxVal.length();
+
+        // Update target notify characteristic based on incoming write characteristic
+        if (pCharacteristic == pDalyFff2 && pDalyNotifyFff1) {
+            s_lastDalyTargetNotifyChar = pDalyNotifyFff1;
+        } else if (pCharacteristic == pDalyWriteChar && pDalyNotifyChar) {
+            s_lastDalyTargetNotifyChar = pDalyNotifyChar;
+        } else if (pCharacteristic == pDalyFf02 && pDalyNotifyFf01) {
+            s_lastDalyTargetNotifyChar = pDalyNotifyFf01;
+        } else if (pCharacteristic == pDalyNusRx && pDalyNusTx) {
+            s_lastDalyTargetNotifyChar = pDalyNusTx;
+        }
 
         Serial.printf("[DALY RX <- Client on %s] (%u bytes): ", 
                       pCharacteristic->getUUID().toString().c_str(), (unsigned int)len);
@@ -1964,12 +1961,11 @@ void loop() {
         }
     }
 
-    // In Daly mode, periodically push Modbus D2 Status frame (every 1500ms) matching client's register count
+    // In Daly mode, periodically push Modbus D2 Status frame (every 1500ms) only if client has requested D2 Modbus
     static unsigned long s_lastDalyPush = 0;
-    if (g_proto == PROTO_DALY && g_deviceConnected && (now - s_lastDalyPush >= 1500)) {
+    if (g_proto == PROTO_DALY && g_deviceConnected && s_lastDalyReadCount > 0 && (now - s_lastDalyPush >= 1500)) {
         s_lastDalyPush = now;
-        uint16_t pushCount = (s_lastDalyReadCount > 0) ? s_lastDalyReadCount : 62;
-        sendDalyModbusResponseD2(0x0000, pushCount);
+        sendDalyModbusResponseD2(0x0000, s_lastDalyReadCount);
     }
 
     // Periodic telemetry log (every 2000ms)
