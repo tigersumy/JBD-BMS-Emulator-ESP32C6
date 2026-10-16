@@ -778,6 +778,9 @@ void sendDalyBleFrame(const uint8_t* frame, size_t len) {
         pDalyNotifyFff1->setValue((uint8_t*)frame, len);
         pDalyNotifyFff1->notify();
     }
+    if (pDalyFff2) {
+        pDalyFff2->setValue((uint8_t*)frame, len);
+    }
     if (pDalyNotifyChar) {
         pDalyNotifyChar->setValue((uint8_t*)frame, len);
         pDalyNotifyChar->notify();
@@ -800,138 +803,135 @@ void sendDalyBleFrame(const uint8_t* frame, size_t len) {
 // Daly Modbus Protocol (D2) Implementations (Official Smart BMS App DL-xxxx)
 // ============================================================================
 
-// Status Frame: 62 registers (124 bytes data -> 129 bytes total) or 80 registers (165 bytes total)
-void sendDalyModbusStatusD2(bool is80Regs = false) {
-    uint8_t dataLen = is80Regs ? (80 * 2) : (62 * 2);
-    size_t totalLen = 3 + dataLen + 2;
-    uint8_t frame[180];
-    memset(frame, 0, sizeof(frame));
+static uint16_t s_lastDalyReadCount = 62;
 
-    frame[0] = 0xD2;
-    frame[1] = 0x03;
-    frame[2] = dataLen;
-
-    // Registers 0..31 (offset 3): Cell voltages 1..32 in mV
-    for (int i = 0; i < 8 && i < g_bms.cell_count; ++i) {
-        frame[3 + i * 2]     = (uint8_t)(g_bms.cell_mv[i] >> 8);
-        frame[3 + i * 2 + 1] = (uint8_t)(g_bms.cell_mv[i] & 0xFF);
+// Universal Daly Modbus Holding Register Provider (16-bit Big-Endian values)
+uint16_t getDalyHoldingRegister(uint16_t reg) {
+    // 0x0000..0x001F (0..31): Cell voltages 1..32 in mV
+    if (reg < 32) {
+        if (reg < g_bms.cell_count && reg < 8) {
+            return g_bms.cell_mv[reg];
+        }
+        return 0;
     }
 
-    // Registers 32..39 (offset 67): Temperatures 1..8 in °C with +40 offset
-    int t1 = (int)((g_bms.ntc1_temp_01k - 2731) / 10) + 40;
-    int t2 = (int)((g_bms.ntc2_temp_01k - 2731) / 10) + 40;
-    int t3 = (int)((g_bms.ntc3_temp_01k - 2731) / 10) + 40;
-    frame[67] = (uint8_t)(t1 >> 8); frame[68] = (uint8_t)(t1 & 0xFF);
-    frame[69] = (uint8_t)(t2 >> 8); frame[70] = (uint8_t)(t2 & 0xFF);
-    frame[71] = (uint8_t)(t3 >> 8); frame[72] = (uint8_t)(t3 & 0xFF);
-
-    // Register 40 (offset 83): Total pack voltage in 0.1V
-    uint16_t v01 = g_bms.pack_voltage_10mv / 10;
-    frame[83] = (uint8_t)(v01 >> 8);
-    frame[84] = (uint8_t)(v01 & 0xFF);
-
-    // Register 41 (offset 85): Current in 0.1A with 30000 offset
-    int32_t cur01a = g_bms.current_10ma / 10;
-    int32_t curVal = 30000 + cur01a;
-    if (curVal < 0) curVal = 0;
-    if (curVal > 65535) curVal = 65535;
-    frame[85] = (uint8_t)((uint16_t)curVal >> 8);
-    frame[86] = (uint8_t)((uint16_t)curVal & 0xFF);
-
-    // Register 42 (offset 87): State of Charge (SOC) in 0.1%
-    uint16_t socVal = (uint16_t)g_bms.soc_percent * 10;
-    frame[87] = (uint8_t)(socVal >> 8);
-    frame[88] = (uint8_t)(socVal & 0xFF);
+    // 0x0020..0x0027 (32..39): Temperatures 1..8 in °C (+40 offset)
+    if (reg >= 32 && reg <= 39) {
+        int idx = reg - 32;
+        if (idx == 0) return (uint16_t)(((int)g_bms.ntc1_temp_01k - 2731) / 10 + 40);
+        if (idx == 1) return (uint16_t)(((int)g_bms.ntc2_temp_01k - 2731) / 10 + 40);
+        if (idx == 2) return (uint16_t)(((int)g_bms.ntc3_temp_01k - 2731) / 10 + 40);
+        return 0;
+    }
 
     // Extremes and averages
     uint16_t maxV = 0, minV = 9999, sumV = 0;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 8 && i < g_bms.cell_count; ++i) {
         if (g_bms.cell_mv[i] > maxV) maxV = g_bms.cell_mv[i];
         if (g_bms.cell_mv[i] < minV) minV = g_bms.cell_mv[i];
         sumV += g_bms.cell_mv[i];
     }
-    uint16_t avgV = sumV / 8;
-    uint16_t deltaV = maxV - minV;
+    uint16_t avgV = (g_bms.cell_count > 0) ? (sumV / g_bms.cell_count) : 3280;
+    uint16_t deltaV = (maxV >= minV) ? (maxV - minV) : 0;
+    int t1 = ((int)g_bms.ntc1_temp_01k - 2731) / 10 + 40;
+    int t2 = ((int)g_bms.ntc2_temp_01k - 2731) / 10 + 40;
+    int t3 = ((int)g_bms.ntc3_temp_01k - 2731) / 10 + 40;
 
-    // Register 43 (offset 89): Max cell voltage (mV)
-    frame[89] = (uint8_t)(maxV >> 8);
-    frame[90] = (uint8_t)(maxV & 0xFF);
+    switch (reg) {
+        // Telemetry & Status Block (0x0028..0x0043 / 40..67)
+        case 40: return g_bms.pack_voltage_10mv / 10;                         // 0x0028: Total pack voltage in 0.1V
+        case 41: {                                                            // 0x0029: Current in 0.1A (+30000)
+            int32_t cur01a = g_bms.current_10ma / 10;
+            int32_t val = 30000 + cur01a;
+            if (val < 0) val = 0;
+            if (val > 65535) val = 65535;
+            return (uint16_t)val;
+        }
+        case 42: return (uint16_t)g_bms.soc_percent * 10;                     // 0x002A: SOC in 0.1%
+        case 43: return maxV;                                                 // 0x002B: Max cell voltage (mV)
+        case 44: return minV;                                                 // 0x002C: Min cell voltage (mV)
+        case 45: return (uint16_t)max(t1, t2);                                // 0x002D: Max cell temp (+40)
+        case 46: return (uint16_t)min(t1, t2);                                // 0x002E: Min cell temp (+40)
+        case 47: {                                                            // 0x002F: Charge/discharge state (0=idle, 1=chg, 2=dsg)
+            if (g_bms.current_10ma > 50) return 1;
+            if (g_bms.current_10ma < -50) return 2;
+            return 0;
+        }
+        case 48: return (uint16_t)(g_bms.remain_cap_10mah / 10);              // 0x0030: Remaining capacity (0.1Ah)
+        case 49: return g_bms.cell_count;                                     // 0x0031: Cell count (8)
+        case 50: return g_bms.ntc_count;                                      // 0x0032: Temp sensor count (3)
+        case 51: return g_bms.cycle_count;                                    // 0x0033: Cycle count
+        case 52: return (g_bms.balance_low != 0 || g_bms.balance_high != 0) ? 1 : 0; // 0x0034: Balancer status
+        case 53: return (g_bms.fet_status & 0x01) ? 1 : 0;                    // 0x0035: Charging MOS status (0: off, 1: on)
+        case 54: return (g_bms.fet_status & 0x02) ? 1 : 0;                    // 0x0036: Discharging MOS status (0: off, 1: on)
+        case 55: return avgV;                                                 // 0x0037: Average cell voltage (mV)
+        case 56: return deltaV;                                               // 0x0038: Delta cell voltage (mV)
+        case 57: {                                                            // 0x0039: Power in Watts
+            float packVf = g_bms.pack_voltage_10mv / 100.0f;
+            float currAf = fabs(g_bms.current_10ma / 100.0f);
+            return (uint16_t)(packVf * currAf);
+        }
+        case 58: return 0;                                                    // 0x003A: Alarm register 1
+        case 59: return 0;                                                    // 0x003B: Alarm register 2
+        case 60: return 0;                                                    // 0x003C: Alarm register 3
+        case 61: return 0;                                                    // 0x003D: Alarm register 4
+        case 62: return g_bms.balance_low;                                    // 0x003E: Cell balance bitmask 1-16
+        case 63: return g_bms.balance_high;                                   // 0x003F: Cell balance bitmask 17-32
+        case 64: return (g_bms.balance_low != 0) ? 31000 : 30000;             // 0x0040: Balance current (+30000)
+        case 65: return 0;                                                    // 0x0041: Reserved
+        case 66: return (uint16_t)t3;                                         // 0x0042: MOSFET temp (+40)
+        case 67: return (uint16_t)t1;                                         // 0x0043: Board temp (+40)
 
-    // Register 44 (offset 91): Min cell voltage (mV)
-    frame[91] = (uint8_t)(minV >> 8);
-    frame[92] = (uint8_t)(minV & 0xFF);
+        // Settings Block (0x0080..0x00A8 / 41 registers)
+        case 0x0080: return (uint16_t)(g_bms.nominal_cap_10mah / 10);        // Rated capacity (0.1Ah -> 2000 = 200.0Ah)
+        case 0x0081: return 3200;                                             // Cell ref voltage (3200 mV)
+        case 0x0082: return 1;                                                // Boards (1)
+        case 0x0083: return g_bms.cell_count;                                 // Cell count (8)
+        case 0x0084: return 0;                                                // Board 2 cells (0)
+        case 0x0085: return 0;                                                // Board 3 cells (0)
+        case 0x0086: return g_bms.ntc_count;                                  // Temp sensors board 1 (3)
+        case 0x0087: return 0;
+        case 0x0088: return 0;
+        case 0x0089: return 0;                                                // Battery type (0 = LiFePO4)
+        case 0x008A: return 7200;                                             // Sleep wait time (7200s)
+        case 0x008B: return 3600;                                             // Warning cell overvoltage (3600mV)
+        case 0x008C: return 3650;                                             // Critical cell overvoltage (3650mV)
+        case 0x008D: return 2600;                                             // Warning cell undervoltage (2600mV)
+        case 0x008E: return 2500;                                             // Critical cell undervoltage (2500mV)
+        case 0x008F: return 288;                                              // Warning total overvoltage (28.8V)
+        case 0x0090: return 292;                                              // Critical total overvoltage (29.2V)
+        case 0x0091: return 216;                                              // Warning total undervoltage (21.6V)
+        case 0x0092: return 200;                                              // Critical total undervoltage (20.0V)
+        case 0x0093: return 31000;                                            // Warning charge current (+100A, offset 30000)
+        case 0x0094: return 31200;                                            // Critical charge current (+120A, offset 30000)
+        case 0x0095: return 28000;                                            // Warning discharge current (-200A, offset 30000)
+        case 0x0096: return 27800;                                            // Critical discharge current (-220A, offset 30000)
+        case 0x0097: return 85;                                               // Warning charge temp high (45°C + 40)
+        case 0x0098: return 90;                                               // Critical charge temp high (50°C + 40)
+        case 0x0099: return 40;                                               // Warning charge temp low (0°C + 40)
+        case 0x009A: return 35;                                               // Critical charge temp low (-5°C + 40)
+        case 0x009B: return 105;                                              // Warning discharge temp high (65°C + 40)
+        case 0x009C: return 110;                                              // Critical discharge temp high (70°C + 40)
+        case 0x009D: return 25;                                               // Warning discharge temp low (-15°C + 40)
+        case 0x009E: return 20;                                               // Critical discharge temp low (-20°C + 40)
+        case 0x009F: return 50;                                               // Warning delta V (50mV)
+        case 0x00A0: return 100;                                              // Critical delta V (100mV)
+        case 0x00A1: return 10;                                               // Warning delta T (10°C)
+        case 0x00A2: return 15;                                               // Critical delta T (15°C)
+        case 0x00A3: return 3200;                                             // Balancing turn on voltage (3200mV)
+        case 0x00A4: return 20;                                               // Equilibrium opening delta (20mV)
+        case 0x00A5: return (g_bms.fet_status & 0x01) ? 1 : 0;                // Charging MOS switch (0: off, 1: on)
+        case 0x00A6: return (g_bms.fet_status & 0x02) ? 1 : 0;                // Discharge MOS switch (0: off, 1: on)
+        case 0x00A7: return (uint16_t)g_bms.soc_percent * 10;                 // SOC setting (0.1%)
+        case 0x00A8: return 130;                                              // MOS temp protection alarm (90°C + 40)
 
-    // Register 45 (offset 93): Max cell temp (+40)
-    frame[93] = (uint8_t)(t1 >> 8);
-    frame[94] = (uint8_t)(t1 & 0xFF);
+        // Extended & Alias Control Registers
+        case 0x00CF: return (g_bms.balance_low != 0 || g_bms.balance_high != 0) ? 1 : 0; // Balancer switch
+        case 0x00D9: return (g_bms.fet_status & 0x02) ? 1 : 0;                // Legacy Discharge MOS
+        case 0x00DA: return (g_bms.fet_status & 0x01) ? 1 : 0;                // Legacy Charge MOS
 
-    // Register 46 (offset 95): Min cell temp (+40)
-    frame[95] = (uint8_t)(t2 >> 8);
-    frame[96] = (uint8_t)(t2 & 0xFF);
-
-    // Register 47 (offset 97): Charge/discharge status (0=idle, 1=chg, 2=dsg)
-    uint8_t st = (g_bms.current_10ma > 50) ? 1 : ((g_bms.current_10ma < -50) ? 2 : 0);
-    frame[97] = 0x00;
-    frame[98] = st;
-
-    // Register 48 (offset 99): Remaining capacity (0.1 Ah)
-    uint16_t remAh01 = (uint32_t)g_bms.remain_cap_10mah / 10;
-    frame[99] = (uint8_t)(remAh01 >> 8);
-    frame[100] = (uint8_t)(remAh01 & 0xFF);
-
-    // Register 49 (offset 101): Cell count
-    frame[101] = 0x00;
-    frame[102] = g_bms.cell_count;
-
-    // Register 50 (offset 103): Temp sensor count
-    frame[103] = 0x00;
-    frame[104] = g_bms.ntc_count;
-
-    // Register 51 (offset 105): Charging cycles
-    frame[105] = (uint8_t)(g_bms.cycle_count >> 8);
-    frame[106] = (uint8_t)(g_bms.cycle_count & 0xFF);
-
-    // Register 52 (offset 107): Balancer status (0: off, 1: on)
-    frame[107] = 0x00;
-    frame[108] = (g_bms.balance_low != 0 || g_bms.balance_high != 0) ? 0x01 : 0x00;
-
-    // Register 53 (offset 109): Charging MOS status (0: off, 1: on)
-    frame[109] = 0x00;
-    frame[110] = (g_bms.fet_status & 0x01) ? 0x01 : 0x00;
-
-    // Register 54 (offset 111): Discharging MOS status (0: off, 1: on)
-    frame[111] = 0x00;
-    frame[112] = (g_bms.fet_status & 0x02) ? 0x01 : 0x00;
-
-    // Register 55 (offset 113): Average cell voltage (mV)
-    frame[113] = (uint8_t)(avgV >> 8);
-    frame[114] = (uint8_t)(avgV & 0xFF);
-
-    // Register 56 (offset 115): Delta cell voltage (mV)
-    frame[115] = (uint8_t)(deltaV >> 8);
-    frame[116] = (uint8_t)(deltaV & 0xFF);
-
-    // Register 57 (offset 117): Power (Watts)
-    float packVf = g_bms.pack_voltage_10mv / 100.0f;
-    float currAf = fabs(g_bms.current_10ma / 100.0f);
-    uint16_t pwrW = (uint16_t)(packVf * currAf);
-    frame[117] = (uint8_t)(pwrW >> 8);
-    frame[118] = (uint8_t)(pwrW & 0xFF);
-
-    // If 80 registers:
-    if (is80Regs) {
-        frame[127] = (uint8_t)(t3 >> 8); frame[128] = (uint8_t)(t3 & 0xFF); // MOS Temp
-        frame[129] = (uint8_t)(t1 >> 8); frame[130] = (uint8_t)(t1 & 0xFF); // Board Temp
-    }
-
-    uint16_t crc = calculateModbusCRC(frame, 3 + dataLen);
-    frame[3 + dataLen]     = (uint8_t)(crc & 0xFF);
-    frame[3 + dataLen + 1] = (uint8_t)((crc >> 8) & 0xFF);
-
-    sendDalyBleFrame(frame, totalLen);
-
-    if (Serial) {
-        Serial.printf("[DALY D2 TX -> Status %u regs] (%u bytes)\n", is80Regs ? 80 : 62, (unsigned int)totalLen);
+        default:
+            return 0;
     }
 }
 
@@ -958,68 +958,6 @@ void sendDalyModbusVersionD2() {
     Serial.println("[DALY D2 TX -> Version (sw: 401804015491, hw: DALY-BMS-8S200A)] (69 bytes)");
 }
 
-// Settings Frame (Registers 0x0080..0x00A8: 41 registers = 82 bytes payload)
-void sendDalyModbusSettingsD2() {
-    uint8_t frame[90];
-    memset(frame, 0, sizeof(frame));
-
-    frame[0] = 0xD2;
-    frame[1] = 0x03;
-    frame[2] = 0x52; // 82 bytes
-
-    auto setReg = [&](size_t regIdx, uint16_t val) {
-        frame[3 + regIdx * 2]     = (uint8_t)(val >> 8);
-        frame[3 + regIdx * 2 + 1] = (uint8_t)(val & 0xFF);
-    };
-
-    setReg(0, (g_bms.nominal_cap_10mah / 10)); // 0x80: Rated capacity (0.1Ah -> 2000 = 200.0 Ah)
-    setReg(1, 3200);                           // 0x81: Cell reference voltage (3200 mV)
-    setReg(2, 1);                              // 0x82: Boards (1)
-    setReg(3, g_bms.cell_count);               // 0x83: Cell count (8)
-    setReg(4, 0);                              // 0x84: Board 2 cells (0)
-    setReg(5, 0);                              // 0x85: Board 3 cells (0)
-    setReg(6, g_bms.ntc_count);                // 0x86: Board 1 temp sensors (3)
-    setReg(7, 0);
-    setReg(8, 0);
-    setReg(9, 0);                              // 0x89: Battery type (0 = LiFePO4)
-    setReg(10, 7200);                          // 0x8A: Sleep wait time (7200s)
-    setReg(11, 3600);                          // 0x8B: Warning cell overvoltage (3600mV)
-    setReg(12, 3650);                          // 0x8C: Critical cell overvoltage (3650mV)
-    setReg(13, 2600);                          // 0x8D: Warning cell undervoltage (2600mV)
-    setReg(14, 2500);                          // 0x8E: Critical cell undervoltage (2500mV)
-    setReg(15, 288);                           // 0x8F: Warning total overvoltage (28.8V)
-    setReg(16, 292);                           // 0x90: Critical total overvoltage (29.2V)
-    setReg(17, 216);                           // 0x91: Warning total undervoltage (21.6V)
-    setReg(18, 200);                           // 0x92: Critical total undervoltage (20.0V)
-    setReg(19, 31000);                         // 0x93: Warning charge current (100A)
-    setReg(20, 31200);                         // 0x94: Critical charge current (120A)
-    setReg(21, 28000);                         // 0x95: Warning discharge current (200A)
-    setReg(22, 27800);                         // 0x96: Critical discharge current (220A)
-    setReg(23, 990);                           // 0x97: Warning SOC high (99.0%)
-    setReg(24, 100);                           // 0x98: Warning SOC low (10.0%)
-
-    uint16_t crc = calculateModbusCRC(frame, 85);
-    frame[85] = (uint8_t)(crc & 0xFF);
-    frame[86] = (uint8_t)((crc >> 8) & 0xFF);
-
-    sendDalyBleFrame(frame, 87);
-    Serial.println("[DALY D2 TX -> Settings (82 bytes payload)] (87 bytes)");
-}
-
-// Balancer switch status (Register 0x00CF)
-void sendDalyModbusBalancerD2(bool on) {
-    uint8_t frame[7];
-    frame[0] = 0xD2;
-    frame[1] = 0x03;
-    frame[2] = 0x02;
-    frame[3] = 0x00;
-    frame[4] = on ? 0x01 : 0x00;
-    uint16_t crc = calculateModbusCRC(frame, 5);
-    frame[5] = (uint8_t)(crc & 0xFF);
-    frame[6] = (uint8_t)((crc >> 8) & 0xFF);
-    sendDalyBleFrame(frame, 7);
-}
-
 // Password response (Register 0x00C9)
 void sendDalyModbusPasswordD2() {
     uint8_t frame[11];
@@ -1032,6 +970,132 @@ void sendDalyModbusPasswordD2() {
     frame[9]  = (uint8_t)(crc & 0xFF);
     frame[10] = (uint8_t)((crc >> 8) & 0xFF);
     sendDalyBleFrame(frame, 11);
+}
+
+// Dynamic Modbus Holding Register Read Responder (Function 0x03)
+void sendDalyModbusResponseD2(uint16_t addr, uint16_t count) {
+    if (!g_deviceConnected) return;
+    if (count == 0) count = 1;
+    if (count > 90) count = 90;
+
+    if (addr == 0x0000) {
+        s_lastDalyReadCount = count;
+    }
+
+    // Special case: Version string (ASCII)
+    if (addr == 0x00A9) {
+        sendDalyModbusVersionD2();
+        return;
+    }
+    // Special case: Password
+    if (addr == 0x00C9) {
+        sendDalyModbusPasswordD2();
+        return;
+    }
+
+    uint8_t byteCount = (uint8_t)(count * 2);
+    size_t totalLen = 3 + byteCount + 2;
+    uint8_t frame[200];
+    memset(frame, 0, sizeof(frame));
+
+    frame[0] = 0xD2;
+    frame[1] = 0x03;
+    frame[2] = byteCount;
+
+    for (uint16_t i = 0; i < count; ++i) {
+        uint16_t val = getDalyHoldingRegister(addr + i);
+        frame[3 + i * 2]     = (uint8_t)(val >> 8);
+        frame[3 + i * 2 + 1] = (uint8_t)(val & 0xFF);
+    }
+
+    uint16_t crc = calculateModbusCRC(frame, 3 + byteCount);
+    frame[3 + byteCount]     = (uint8_t)(crc & 0xFF);
+    frame[3 + byteCount + 1] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, totalLen);
+
+    if (Serial) {
+        Serial.printf("[DALY D2 TX -> Read Resp Addr 0x%04X, Count %u, Bytes %u] (%u total)\n",
+                      addr, count, byteCount, (unsigned int)totalLen);
+    }
+}
+
+// Backward-compatible wrappers
+void sendDalyModbusStatusD2(bool is80Regs = false) {
+    sendDalyModbusResponseD2(0x0000, is80Regs ? 80 : 62);
+}
+
+void sendDalyModbusSettingsD2() {
+    sendDalyModbusResponseD2(0x0080, 41);
+}
+
+void sendDalyModbusBalancerD2(bool on) {
+    sendDalyModbusResponseD2(0x00CF, 1);
+}
+
+// Modbus Function 0x06 Write Single Register Handler
+void handleDalyModbusWrite(uint16_t addr, uint16_t val) {
+    Serial.printf("[DALY D2 WRITE] Addr 0x%04X, Val 0x%04X\n", addr, val);
+
+    if (addr == 0x00A5 || addr == 0x00DA) {
+        // Charging MOS Switch Control
+        bool chg = (val != 0);
+        if (chg) {
+            g_bms.fet_status |= 0x01;
+            if (g_bms.mode == MODE_IDLE) g_bms.mode = MODE_CHARGE;
+        } else {
+            g_bms.fet_status &= ~0x01;
+            if (g_bms.mode == MODE_CHARGE) g_bms.mode = MODE_IDLE;
+        }
+        updateStatusLed();
+        Serial.printf("[DALY D2] Charging Switch set to: %s (fet_status: 0x%02X)\n",
+                      chg ? "ON" : "OFF", g_bms.fet_status);
+    } else if (addr == 0x00A6 || addr == 0x00D9) {
+        // Discharging MOS Switch Control
+        bool dsg = (val != 0);
+        if (dsg) {
+            g_bms.fet_status |= 0x02;
+            if (g_bms.mode == MODE_IDLE) g_bms.mode = MODE_DISCHARGE;
+        } else {
+            g_bms.fet_status &= ~0x02;
+            if (g_bms.mode == MODE_DISCHARGE) g_bms.mode = MODE_IDLE;
+        }
+        updateStatusLed();
+        Serial.printf("[DALY D2] Discharging Switch set to: %s (fet_status: 0x%02X)\n",
+                      dsg ? "ON" : "OFF", g_bms.fet_status);
+    } else if (addr == 0x00A7 || addr == 0x00CF) {
+        // Active Balancer Control
+        bool bal = (val != 0);
+        g_bms.balance_low = bal ? 0x000F : 0x0000;
+        Serial.printf("[DALY D2] Active Balancer set to: %s\n", bal ? "ON" : "OFF");
+    } else if (addr == 0x0080) {
+        // Rated capacity
+        if (val > 0) {
+            g_bms.nominal_cap_10mah = (uint32_t)val * 10;
+            g_bms.cycle_cap_10mah = (g_bms.nominal_cap_10mah * 8) / 10;
+            Serial.printf("[DALY D2] Rated capacity updated: %.1f Ah\n", val / 10.0f);
+        }
+    } else if (addr == 0x0083) {
+        // Cell count
+        if (val >= 3 && val <= 32) {
+            g_bms.cell_count = (uint8_t)val;
+            Serial.printf("[DALY D2] Cell count updated: %uS\n", val);
+        }
+    }
+
+    // Standard Modbus 0x06 response: Echo back the 8-byte request frame with valid CRC
+    uint8_t resp[8];
+    resp[0] = 0xD2;
+    resp[1] = 0x06;
+    resp[2] = (uint8_t)(addr >> 8);
+    resp[3] = (uint8_t)(addr & 0xFF);
+    resp[4] = (uint8_t)(val >> 8);
+    resp[5] = (uint8_t)(val & 0xFF);
+    uint16_t crc = calculateModbusCRC(resp, 6);
+    resp[6] = (uint8_t)(crc & 0xFF);
+    resp[7] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(resp, 8);
 }
 
 // ============================================================================
@@ -1317,19 +1381,13 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
                       pCharacteristic->getUUID().toString().c_str(), subValue);
         if (subValue > 0) {
             delay(50);
-            sendDalyModbusStatusD2(false);
-            delay(20);
-            sendDalyModbusVersionD2();
-            delay(20);
-            sendDalyP81Cells();
-            delay(20);
-            sendAllDalyTelemetry();
+            sendDalyModbusResponseD2(0x0000, 62);
         }
     }
 
     void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         Serial.printf("[DALY BLE] Client READ on %s\n", pCharacteristic->getUUID().toString().c_str());
-        sendDalyModbusStatusD2(false);
+        sendDalyModbusResponseD2(0x0000, 62);
     }
 
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
@@ -1351,41 +1409,13 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
             uint16_t val  = (uint16_t(buf[4]) << 8) | buf[5];
 
             if (func == 0x03) {
-                // Read Holding Registers
+                // Read Holding Registers (dynamic slice responder)
                 Serial.printf("[DALY D2 READ] Addr 0x%04X, Count %u\n", addr, val);
-                if (addr == 0x0000) {
-                    sendDalyModbusStatusD2(val >= 80);
-                } else if (addr == 0x00A9) {
-                    sendDalyModbusVersionD2();
-                } else if (addr == 0x0080) {
-                    sendDalyModbusSettingsD2();
-                } else if (addr == 0x00CF) {
-                    sendDalyModbusBalancerD2(g_bms.balance_low != 0);
-                } else if (addr == 0x00C9) {
-                    sendDalyModbusPasswordD2();
-                } else {
-                    sendDalyModbusStatusD2(false);
-                }
+                sendDalyModbusResponseD2(addr, val);
                 return;
             } else if (func == 0x06) {
                 // Write Single Register
-                Serial.printf("[DALY D2 WRITE] Addr 0x%04X, Val 0x%04X\n", addr, val);
-                if (addr == 0x00CF) {
-                    bool bal = (val != 0);
-                    g_bms.balance_low = bal ? 0x000F : 0x0000;
-                    Serial.printf("[DALY D2] Balancer %s\n", bal ? "ENABLED" : "DISABLED");
-                } else if (addr == 0x00D9) {
-                    bool dsg = (val != 0);
-                    if (dsg) g_bms.fet_status |= 0x02; else g_bms.fet_status &= ~0x02;
-                    updateStatusLed();
-                    Serial.printf("[DALY D2] Discharge FET %s\n", dsg ? "ENABLED" : "DISABLED");
-                } else if (addr == 0x00DA) {
-                    bool chg = (val != 0);
-                    if (chg) g_bms.fet_status |= 0x01; else g_bms.fet_status &= ~0x01;
-                    updateStatusLed();
-                    Serial.printf("[DALY D2] Charge FET %s\n", chg ? "ENABLED" : "DISABLED");
-                }
-                sendDalyBleFrame(buf, (len >= 8) ? 8 : len);
+                handleDalyModbusWrite(addr, val);
                 return;
             }
         }
@@ -1924,15 +1954,12 @@ void loop() {
         }
     }
 
-    // In Daly mode, periodically push Modbus D2 Status, P81 cells, and legacy A5 frames (every 1000ms) when connected
+    // In Daly mode, periodically push Modbus D2 Status frame (every 1500ms) matching client's register count
     static unsigned long s_lastDalyPush = 0;
-    if (g_proto == PROTO_DALY && g_deviceConnected && (now - s_lastDalyPush >= 1000)) {
+    if (g_proto == PROTO_DALY && g_deviceConnected && (now - s_lastDalyPush >= 1500)) {
         s_lastDalyPush = now;
-        sendDalyModbusStatusD2(false);
-        delay(20);
-        sendDalyP81Cells();
-        delay(20);
-        sendAllDalyTelemetry();
+        uint16_t pushCount = (s_lastDalyReadCount > 0) ? s_lastDalyReadCount : 62;
+        sendDalyModbusResponseD2(0x0000, pushCount);
     }
 
     // Periodic telemetry log (every 2000ms)
