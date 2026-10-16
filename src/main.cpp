@@ -118,6 +118,51 @@ static EmulatorProtocol g_proto = PROTO_JBD;
 static unsigned long g_bootTime = 0;
 static bool g_doubleResetPending = false;
 
+void checkBootButtonAtPowerOn() {
+    pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+    delay(15);
+    if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
+        Serial.println("\n[SYSTEM] >>> BOOT BUTTON HELD AT POWER-ON / RESET! <<<");
+        setRgbLed(150, 150, 150); // White: button hold registered
+        unsigned long startHold = millis();
+        bool armed = false;
+        while (digitalRead(BOOT_BUTTON_PIN) == LOW) {
+            unsigned long heldMs = millis() - startHold;
+            if (heldMs >= 600) {
+                armed = true;
+                // Alternate green flashes to signal "Threshold reached, release to switch!"
+                if (((heldMs / 120) % 2) == 0) {
+                    setRgbLed(0, 220, 0);
+                } else {
+                    setRgbLed(0, 40, 0);
+                }
+            }
+            delay(15);
+        }
+        
+        if (armed) {
+            s_prefs.begin("bms_emu", false);
+            uint8_t cur = s_prefs.getUChar("proto", PROTO_JBD);
+            if (cur > PROTO_DALY) cur = PROTO_JBD;
+            uint8_t nextProto = (cur == PROTO_JBD) ? PROTO_DALY : PROTO_JBD;
+            s_prefs.putUChar("proto", nextProto);
+            s_prefs.putBool("dr_flag", false);
+            s_prefs.end();
+            
+            Serial.printf("[SYSTEM] Mode changed at power-on -> %s! Restarting...\n",
+                          (nextProto == PROTO_DALY) ? "DALY BMS" : "JBD BMS");
+            for (int i = 0; i < 4; ++i) {
+                if (nextProto == PROTO_DALY) setRgbLed(120, 0, 120); // Magenta
+                else setRgbLed(120, 0, 0); // Red
+                delay(120);
+                setRgbLed(0, 0, 0);
+                delay(60);
+            }
+            esp_restart();
+        }
+    }
+}
+
 void initDoubleResetAndMode() {
     s_prefs.begin("bms_emu", false);
     bool doubleReset = s_prefs.getBool("dr_flag", false);
@@ -1593,6 +1638,7 @@ void setup() {
     delay(500);
 
     pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+    checkBootButtonAtPowerOn();
 
     initDoubleResetAndMode();
 
@@ -1676,13 +1722,15 @@ void setup() {
 
         pDalyFff2 = pDalyFff0->createCharacteristic(
             NimBLEUUID((uint16_t)0xFFF2),
-            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
         );
         pDalyFff2->setCallbacks(new DalyWriteCallbacks());
 
         pDalyFff3 = pDalyFff0->createCharacteristic(
             NimBLEUUID((uint16_t)0xFFF3),
-            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
         );
         pDalyFff3->setCallbacks(new DalyWriteCallbacks());
 
@@ -1692,6 +1740,42 @@ void setup() {
             NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
         );
         pDalyNotifyFff4->setCallbacks(new DalyWriteCallbacks());
+
+        // Proprietary Daly Hardware Chipset Service (02F00000-0000-0000-0000-00000000FE00)
+        // Discovered via physical Daly BMS nRF Connect scan
+        NimBLEService* pDalyFe00 = pServer->createService(NimBLEUUID("02F00000-0000-0000-0000-00000000FE00"));
+        if (pDalyFe00) {
+            pDalyFe00->createCharacteristic(
+                NimBLEUUID("02F00000-0000-0000-0000-00000000FF00"),
+                NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+            );
+            pDalyFe00->createCharacteristic(
+                NimBLEUUID("02F00000-0000-0000-0000-00000000FF01"),
+                NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+            );
+            NimBLECharacteristic* pFe02 = pDalyFe00->createCharacteristic(
+                NimBLEUUID("02F00000-0000-0000-0000-00000000FF02"),
+                NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+                NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+            );
+            pFe02->setCallbacks(new DalyWriteCallbacks());
+
+            pDalyFe00->createCharacteristic(
+                NimBLEUUID("02F00000-0000-0000-0000-00000000FF03"),
+                NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+            );
+            NimBLECharacteristic* pFe04 = pDalyFe00->createCharacteristic(
+                NimBLEUUID("02F00000-0000-0000-0000-00000000FF04"),
+                NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+                NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+            );
+            pFe04->setCallbacks(new DalyWriteCallbacks());
+
+            pDalyFe00->createCharacteristic(
+                NimBLEUUID("02F00000-0000-0000-0000-00000000FF05"),
+                NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+            );
+        }
 
         // Service 0xFF00 (for apps expecting classic 0xFF00 profile)
         NimBLEService* pDalyFf00 = pServer->createService(NimBLEUUID((uint16_t)0xFF00));
@@ -1879,20 +1963,43 @@ void loop() {
         s_prefs.putBool("dr_flag", false);
     }
 
-    // Hardware Button (GPIO 9 BOOT Button): Long press (> 1.5s) toggles BMS mode
+    // Hardware Button (GPIO 9 BOOT Button): Long press (> 1.5s) with live visual feedback
     static unsigned long s_btnPressStart = 0;
     static bool s_btnWasPressed = false;
+    static bool s_btnArmed = false;
     bool btnIsPressed = (digitalRead(BOOT_BUTTON_PIN) == LOW);
+
     if (btnIsPressed && !s_btnWasPressed) {
         s_btnWasPressed = true;
         s_btnPressStart = now;
+        s_btnArmed = false;
+        // Immediate response: Amber/Yellow pulse to confirm button registration
+        setRgbLed(140, 100, 0);
     } else if (btnIsPressed && s_btnWasPressed) {
-        if (now - s_btnPressStart > 1500) {
-            Serial.println("\n[BUTTON] Long press detected on BOOT button (GPIO 9)! Toggling mode...");
-            toggleEmulatorMode();
+        unsigned long pressDuration = now - s_btnPressStart;
+        if (pressDuration < 1500) {
+            // Pulse Yellow while waiting: 0..1500ms
+            if (((pressDuration / 150) % 2) == 0) {
+                setRgbLed(150, 110, 0);
+            } else {
+                setRgbLed(40, 25, 0);
+            }
+        } else {
+            // Reached 1.5s threshold -> Solid bright Green! Ready to toggle!
+            s_btnArmed = true;
+            setRgbLed(0, 255, 0);
         }
     } else if (!btnIsPressed && s_btnWasPressed) {
         s_btnWasPressed = false;
+        if (s_btnArmed) {
+            Serial.println("\n[BUTTON] Long press released -> Toggling mode!");
+            setRgbLed(200, 200, 200);
+            delay(150);
+            toggleEmulatorMode();
+        } else {
+            // Released early, cancel and restore status LED
+            updateStatusLed();
+        }
     }
 
     // High frequency physics & telemetry simulation (every 200ms)
@@ -2027,10 +2134,16 @@ void loop() {
 
     // Interactive Serial Control
     if (Serial.available()) {
-        char ch = Serial.read();
-        if (ch == 'm' || ch == 'M') {
+        String cmd = Serial.readStringUntil('\n');
+        cmd.trim();
+        cmd.toLowerCase();
+        if (cmd == "m" || cmd == "mode" || cmd == "toggle") {
             toggleEmulatorMode();
-        } else if (ch == 't' || ch == 'T') {
+        } else if (cmd == "j" || cmd == "jbd") {
+            setEmulatorMode(PROTO_JBD);
+        } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
+            setEmulatorMode(PROTO_DALY);
+        } else if (cmd == "t" || cmd == "telemetry") {
             Serial.printf(">>> Manual Telemetry Burst (proto=%s, connected=%d) <<<\n",
                           (g_proto == PROTO_DALY) ? "DALY" : "JBD", g_deviceConnected);
             if (g_proto == PROTO_DALY) {
@@ -2038,36 +2151,47 @@ void loop() {
                 sendDalyP81Cells();
                 sendAllDalyTelemetry();
             }
-        } else if (ch == 'j' || ch == 'J') {
-            setEmulatorMode(PROTO_JBD);
-        } else if (ch == 'y' || ch == 'Y') {
-            setEmulatorMode(PROTO_DALY);
-        } else if (ch == '1' || ch == 'd' || ch == 'D') {
+        } else if (cmd == "1" || cmd == "dis" || cmd == "discharge") {
             g_bms.mode = MODE_DISCHARGE;
             updateStatusLed();
             Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) <<<");
-        } else if (ch == '2' || ch == 'c' || ch == 'C' || ch == 'g' || ch == 'G') {
+        } else if (cmd == "2" || cmd == "c" || cmd == "chg" || cmd == "charge") {
             g_bms.mode = MODE_CHARGE;
             updateStatusLed();
             Serial.println(">>> Switched to MODE_CHARGE (+25.00 A) <<<");
-        } else if (ch == '0' || ch == 'i' || ch == 'I') {
+        } else if (cmd == "0" || cmd == "i" || cmd == "idle") {
             g_bms.mode = MODE_IDLE;
             updateStatusLed();
             Serial.println(">>> Switched to MODE_IDLE (0.00 A Standby) <<<");
-        } else if (ch == 'f' || ch == 'F') {
+        } else if (cmd == "f" || cmd == "fet") {
             g_bms.fet_status = (g_bms.fet_status == 0x03) ? 0x00 : 0x03;
             updateStatusLed();
             Serial.printf(">>> Toggled MOSFETs: %s <<<\n", (g_bms.fet_status == 0x03) ? "ENABLED (ON)" : "DISABLED (OFF)");
-        } else if (ch == '+' || ch == '=') {
+        } else if (cmd == "+" || cmd == "=") {
             if (g_bms.soc_percent < 100) g_bms.soc_percent++;
             g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
             updateStatusLed();
             Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
-        } else if (ch == '-' || ch == '_') {
+        } else if (cmd == "-" || cmd == "_") {
             if (g_bms.soc_percent > 0) g_bms.soc_percent--;
             g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
             updateStatusLed();
             Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
+        } else if (cmd == "d") {
+            g_bms.mode = MODE_DISCHARGE;
+            updateStatusLed();
+            Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) [Tip: to switch BMS type to Daly, type 'y' or 'daly'] <<<");
+        } else if (cmd == "help" || cmd == "?") {
+            Serial.println("\n--- Interactive Serial Commands ---");
+            Serial.println("  'j' or 'jbd'     : Switch to JBD BMS emulator");
+            Serial.println("  'y' or 'daly'    : Switch to DALY BMS emulator");
+            Serial.println("  'm' or 'toggle'  : Toggle BMS emulator mode");
+            Serial.println("  '1' / 'dis'      : Discharge mode (-17A)");
+            Serial.println("  '2' / 'chg'      : Charge mode (+25A)");
+            Serial.println("  '0' / 'idle'     : Idle mode (0A)");
+            Serial.println("  'f' / 'fet'      : Toggle Charge/Discharge MOSFETs");
+            Serial.println("  '+' / '-'        : Adjust SOC (+/- 1%)");
+            Serial.println("-----------------------------------\n");
         }
     }
 
