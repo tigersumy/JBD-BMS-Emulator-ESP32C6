@@ -276,6 +276,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     }
 };
 
+static NimBLECharacteristic* s_lastJbdTargetNotifyChar = nullptr;
+
 // ============================================================================
 // JBD Protocol Response Helper (BLE MTU chunking: 20 bytes per chunk)
 // ============================================================================
@@ -299,28 +301,30 @@ void sendJBDResponse(uint8_t reg, const uint8_t* payload, uint8_t payloadLen, ui
     frame[5 + payloadLen] = (uint8_t)(crc & 0xFF);
     frame[6 + payloadLen] = 0x77;
 
+    // Determine target notify characteristic (avoid notifying on both simultaneously)
+    NimBLECharacteristic* targetChar = s_lastJbdTargetNotifyChar;
+    if (!targetChar) {
+        targetChar = pNotifyChar ? pNotifyChar : pNotifyFff1;
+    }
+    if (!targetChar) return;
+
     // Send notifications in 20-byte chunks matching genuine JBD BLE hardware (MTU=23)
     const size_t CHUNK_SIZE = 20;
     for (size_t offset = 0; offset < totalLen && g_deviceConnected; offset += CHUNK_SIZE) {
         size_t sendLen = totalLen - offset;
         if (sendLen > CHUNK_SIZE) sendLen = CHUNK_SIZE;
 
-        if (pNotifyChar) {
-            pNotifyChar->setValue(&frame[offset], sendLen);
-            pNotifyChar->notify();
-        }
-        if (pNotifyFff1) {
-            pNotifyFff1->setValue(&frame[offset], sendLen);
-            pNotifyFff1->notify();
-        }
+        targetChar->notify(&frame[offset], sendLen);
+
         if (offset + sendLen < totalLen) {
-            delay(5); // Small inter-chunk pacing to avoid BLE FIFO overrun
+            delay(25); // 25ms pacing matching BLE connection interval to ensure packet delivery
         }
     }
 
     if (Serial) {
-        Serial.printf("[JBD TX -> Reg 0x%02X] (%u bytes in %u chunks)\n", 
-                      reg, (unsigned int)totalLen, (unsigned int)((totalLen + CHUNK_SIZE - 1) / CHUNK_SIZE));
+        Serial.printf("[JBD TX -> Reg 0x%02X on %s] (%u bytes in %u chunks)\n", 
+                      reg, targetChar->getUUID().toString().c_str(),
+                      (unsigned int)totalLen, (unsigned int)((totalLen + CHUNK_SIZE - 1) / CHUNK_SIZE));
     }
 }
 
@@ -504,6 +508,12 @@ void sendBleModuleResponse(uint8_t cmd, const uint8_t* payload, uint8_t payloadL
 // ============================================================================
 class WriteCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        if (pCharacteristic == pWriteChar) {
+            s_lastJbdTargetNotifyChar = pNotifyChar;
+        } else if (pCharacteristic == pWriteFff2) {
+            s_lastJbdTargetNotifyChar = pNotifyFff1;
+        }
+
         std::string rxData = pCharacteristic->getValue();
         size_t len = rxData.length();
         if (len == 0) return;
