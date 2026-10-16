@@ -821,6 +821,15 @@ uint16_t getDalyHoldingRegister(uint16_t reg) {
         return 0;
     }
 
+    // 0x0047..0x0056 (71..86): Single cell voltages 1..16 in mV
+    if (reg >= 0x0047 && reg <= 0x0056) {
+        int idx = reg - 0x0047;
+        if (idx < g_bms.cell_count && idx < 8) {
+            return g_bms.cell_mv[idx];
+        }
+        return 0;
+    }
+
     // Extremes and averages
     uint16_t maxV = 0, minV = 9999, sumV = 0;
     for (int i = 0; i < 8 && i < g_bms.cell_count; ++i) {
@@ -922,8 +931,16 @@ uint16_t getDalyHoldingRegister(uint16_t reg) {
         case 0x00A7: return (uint16_t)g_bms.soc_percent * 10;                 // SOC setting (0.1%)
         case 0x00A8: return 130;                                              // MOS temp protection alarm (90°C + 40)
 
+        // Production date (YYMMDD00 in hex, e.g. 20240516)
+        case 0x00CC: return 0x2024; // Year 2024
+        case 0x00CD: return 0x0516; // May 16 -> "20240516"
+
+        // PID ASCII string ("NoPID")
+        case 0x00CE: return 0x4E6F; // 'N', 'o'
+        case 0x00CF: return 0x5049; // 'P', 'I'
+        case 0x00D0: return 0x4400; // 'D', '\0'
+
         // Extended & Alias Control Registers
-        case 0x00CF: return (g_bms.balance_low != 0 || g_bms.balance_high != 0) ? 1 : 0; // Balancer switch
         case 0x00D9: return (g_bms.fet_status & 0x02) ? 1 : 0;                // Legacy Discharge MOS
         case 0x00DA: return (g_bms.fet_status & 0x01) ? 1 : 0;                // Legacy Charge MOS
 
@@ -932,27 +949,49 @@ uint16_t getDalyHoldingRegister(uint16_t reg) {
     }
 }
 
-// Version Frame (Registers 0x00A9..0x00C8: 32 regs software + 32 regs hardware = 64 bytes payload)
-void sendDalyModbusVersionD2() {
-    uint8_t frame[70];
+// Version Frame (Registers 0x00A9..0x00CC: 35 registers = 70 bytes payload)
+void sendDalyModbusVersionD2(uint16_t count = 35) {
+    if (!g_deviceConnected) return;
+    if (count == 0) count = 35;
+    if (count > 40) count = 40;
+    uint8_t byteCount = (uint8_t)(count * 2);
+    size_t totalLen = 3 + byteCount + 2;
+    uint8_t frame[90];
     memset(frame, 0, sizeof(frame));
 
     frame[0] = 0xD2;
     frame[1] = 0x03;
-    frame[2] = 0x40; // 64 bytes
+    frame[2] = byteCount;
 
-    const char* sw = "401804015491";
-    memcpy(&frame[3], sw, strlen(sw));
+    // Registers 0x00A9..0x00B0 (8 regs = 16 bytes): Software Version
+    const char* sw = (g_bms.cell_count > 4) ? "24_231116_001T" : "12_231116_001T";
+    memcpy(&frame[3], sw, min((size_t)16, strlen(sw)));
 
-    const char* hw = "DALY-BMS-8S200A";
-    memcpy(&frame[35], hw, strlen(hw));
+    // Registers 0x00B1..0x00B8 (8 regs = 16 bytes): Hardware Version
+    const char* hw = "DL-8S-200A";
+    if (byteCount >= 32) {
+        memcpy(&frame[3 + 16], hw, min((size_t)16, strlen(hw)));
+    }
 
-    uint16_t crc = calculateModbusCRC(frame, 67);
-    frame[67] = (uint8_t)(crc & 0xFF);
-    frame[68] = (uint8_t)((crc >> 8) & 0xFF);
+    // Registers 0x00B9..0x00C8 (16 regs = 32 bytes): Machine encoding / SN Code
+    const char* sn = "207JD160400278";
+    if (byteCount >= 64) {
+        memcpy(&frame[3 + 32], sn, min((size_t)32, strlen(sn)));
+    }
 
-    sendDalyBleFrame(frame, 69);
-    Serial.println("[DALY D2 TX -> Version (sw: 401804015491, hw: DALY-BMS-8S200A)] (69 bytes)");
+    // Registers 0x00C9..0x00CB (3 regs = 6 bytes): Password
+    const char* pwd = "123456";
+    if (byteCount >= 70) {
+        memcpy(&frame[3 + 64], pwd, 6);
+    }
+
+    uint16_t crc = calculateModbusCRC(frame, 3 + byteCount);
+    frame[3 + byteCount]     = (uint8_t)(crc & 0xFF);
+    frame[3 + byteCount + 1] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, totalLen);
+    Serial.printf("[DALY D2 TX -> Version (sw: %s, hw: %s, sn: %s, count: %u, bytes: %u)] (%u total)\n",
+                  sw, hw, sn, count, byteCount, (unsigned int)totalLen);
 }
 
 // Password response (Register 0x00C9)
@@ -981,7 +1020,7 @@ void sendDalyModbusResponseD2(uint16_t addr, uint16_t count) {
 
     // Special case: Version string (ASCII)
     if (addr == 0x00A9) {
-        sendDalyModbusVersionD2();
+        sendDalyModbusVersionD2(count);
         return;
     }
     // Special case: Password
@@ -1383,7 +1422,7 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
 
     void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         Serial.printf("[DALY BLE] Client READ on %s\n", pCharacteristic->getUUID().toString().c_str());
-        sendDalyModbusResponseD2(0x0000, 62);
+        sendDalyModbusResponseD2(0x0000, 80);
     }
 
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
@@ -1688,7 +1727,7 @@ void setup() {
         NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
         );
-        pModelChar->setValue("DALY-BMS");
+        pModelChar->setValue("DL-401804015491");
 
         NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
@@ -1698,17 +1737,17 @@ void setup() {
         NimBLECharacteristic* pSerialChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ
         );
-        pSerialChar->setValue("401804015491");
+        pSerialChar->setValue("207JD160400278");
 
         NimBLECharacteristic* pFwChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ
         );
-        pFwChar->setValue("V1.0");
+        pFwChar->setValue((g_bms.cell_count > 4) ? "24_231116_001T" : "12_231116_001T");
 
         NimBLECharacteristic* pHwChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ
         );
-        pHwChar->setValue("V1.0");
+        pHwChar->setValue("DL-8S-200A");
 
         pServer->start();
 
