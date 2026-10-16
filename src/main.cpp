@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <esp_mac.h>
+#include <Preferences.h>
 
 // ============================================================================
 // Device & BLE Profile Configuration
@@ -14,16 +15,32 @@
 #define NOTIFY_FFF1_UUID      ((uint16_t)0xFFF1)
 #define WRITE_FFF2_UUID       ((uint16_t)0xFFF2)
 
-// Onboard WS2812 RGB LED for WeAct Studio ESP32-C6 Mini (GPIO 8)
+// Daly Profile Configuration
+#define DALY_DEVICE_NAME      "DL-401804015491"
+#define DALY_SERVICE_UUID     ((uint16_t)0xFFE0)
+#define DALY_NOTIFY_CHAR_UUID ((uint16_t)0xFFE1)
+#define DALY_WRITE_CHAR_UUID  ((uint16_t)0xFFE2)
+
+// Hardware Pins
 #ifndef RGB_LED_PIN
 #define RGB_LED_PIN 8
 #endif
 
+#ifndef BOOT_BUTTON_PIN
+#define BOOT_BUTTON_PIN 9
+#endif
+
+enum EmulatorProtocol {
+    PROTO_JBD = 0,
+    PROTO_DALY = 1
+};
+
 // PIN Code for JBD Authentication (System passkey & App-layer PIN)
 #define JBD_PIN_CODE "123456"
 
-// Target Bluetooth MAC Address
+// Target Bluetooth MAC Addresses (Separate MACs prevent GATT caching collisions)
 const uint8_t TARGET_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+const uint8_t DALY_BT_MAC[6]   = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xD1};
 
 // ============================================================================
 // RGB LED Control with 50% Brightness Scaling
@@ -79,34 +96,126 @@ NimBLECharacteristic* pNotifyChar = nullptr;
 NimBLECharacteristic* pWriteChar = nullptr;
 NimBLECharacteristic* pNotifyFff1 = nullptr;
 NimBLECharacteristic* pWriteFff2 = nullptr;
+
+// Daly Characteristics
+NimBLECharacteristic* pDalyNotifyChar = nullptr;
+NimBLECharacteristic* pDalyWriteChar = nullptr;
+NimBLECharacteristic* pDalyNotifyFff1 = nullptr;
+NimBLECharacteristic* pDalyFff2 = nullptr;
+NimBLECharacteristic* pDalyFff3 = nullptr;
+NimBLECharacteristic* pDalyNotifyFff4 = nullptr;
+NimBLECharacteristic* pDalyNotifyFf01 = nullptr;
+NimBLECharacteristic* pDalyFf02 = nullptr;
+NimBLECharacteristic* pDalyNusTx = nullptr;
+NimBLECharacteristic* pDalyNusRx = nullptr;
+
 bool g_deviceConnected = false;
 unsigned long g_lastLogTime = 0;
 unsigned long g_lastSimTime = 0;
+
+static Preferences s_prefs;
+static EmulatorProtocol g_proto = PROTO_JBD;
+static unsigned long g_bootTime = 0;
+static bool g_doubleResetPending = false;
+
+void initDoubleResetAndMode() {
+    s_prefs.begin("bms_emu", false);
+    bool doubleReset = s_prefs.getBool("dr_flag", false);
+    uint8_t savedProto = s_prefs.getUChar("proto", PROTO_JBD);
+    if (savedProto > PROTO_DALY) savedProto = PROTO_JBD;
+
+    if (doubleReset) {
+        savedProto = (savedProto == PROTO_JBD) ? PROTO_DALY : PROTO_JBD;
+        s_prefs.putUChar("proto", savedProto);
+        s_prefs.putBool("dr_flag", false);
+        Serial.printf("\n=======================================================\n");
+        Serial.printf("[SYSTEM] >> DOUBLE RESET DETECTED! Switched to: %s <<\n", 
+                      (savedProto == PROTO_DALY) ? "DALY BMS (DL-401804015491)" : "JBD BMS (BS-26A-072-005)");
+        Serial.printf("=======================================================\n\n");
+    } else {
+        s_prefs.putBool("dr_flag", true);
+        g_doubleResetPending = true;
+    }
+
+    g_proto = (EmulatorProtocol)savedProto;
+    g_bootTime = millis();
+}
+
+void toggleEmulatorMode() {
+    uint8_t newProto = (g_proto == PROTO_JBD) ? PROTO_DALY : PROTO_JBD;
+    s_prefs.putUChar("proto", newProto);
+    s_prefs.putBool("dr_flag", false);
+    Serial.printf("\n[SYSTEM] Mode toggled -> Restarting as %s...\n", 
+                  (newProto == PROTO_DALY) ? "DALY BMS" : "JBD BMS");
+    for (int i = 0; i < 3; ++i) {
+        setRgbLed(50, 50, 0);
+        delay(100);
+        setRgbLed(0, 0, 0);
+        delay(50);
+    }
+    esp_restart();
+}
+
+void setEmulatorMode(EmulatorProtocol p) {
+    if (g_proto == p) return;
+    s_prefs.putUChar("proto", (uint8_t)p);
+    s_prefs.putBool("dr_flag", false);
+    Serial.printf("\n[SYSTEM] Mode set to %s -> Restarting...\n", 
+                  (p == PROTO_DALY) ? "DALY BMS" : "JBD BMS");
+    for (int i = 0; i < 3; ++i) {
+        setRgbLed(50, 50, 0);
+        delay(100);
+        setRgbLed(0, 0, 0);
+        delay(50);
+    }
+    esp_restart();
+}
 
 // ============================================================================
 // Multi-color Dynamic Status LED Indicator
 // ============================================================================
 void updateStatusLed() {
-    if (!g_deviceConnected) {
-        // 🔴 Red: Advertising / Waiting for Bluetooth client
-        setRgbLed(40, 0, 0);
-    } else {
-        // Connected to Client
-        if (g_bms.protection_status != 0) {
-            // 🟡 Yellow: Protection / Alarm active
-            setRgbLed(40, 32, 0);
-        } else if (g_bms.soc_percent >= 100) {
-            // ⚪ White: 100% Fully Charged
-            setRgbLed(25, 25, 25);
-        } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
-            // 🩵 Cyan: Active Charging (+25A)
-            setRgbLed(0, 35, 35);
-        } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
-            // 🟠 Orange: Active Discharging (-17A)
-            setRgbLed(40, 14, 0);
+    if (g_proto == PROTO_DALY) {
+        if (!g_deviceConnected) {
+            // 🟣 Purple/Magenta: Daly Advertising / Waiting for BLE client
+            setRgbLed(40, 0, 40);
         } else {
-            // 🟢 Green: Standby / Idle (0A, connected)
-            setRgbLed(0, 35, 0);
+            if (g_bms.protection_status != 0) {
+                // 🟡 Yellow: Protection / Alarm active
+                setRgbLed(40, 32, 0);
+            } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
+                // 🩵 Cyan: Active Charging (+25A)
+                setRgbLed(0, 35, 35);
+            } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
+                // 🔵 Blue: Daly Active Discharging (-17A)
+                setRgbLed(0, 10, 50);
+            } else {
+                // 🟢 Green: Standby / Idle (0A, connected)
+                setRgbLed(0, 35, 0);
+            }
+        }
+    } else {
+        if (!g_deviceConnected) {
+            // 🔴 Red: JBD Advertising / Waiting for Bluetooth client
+            setRgbLed(40, 0, 0);
+        } else {
+            // Connected to Client
+            if (g_bms.protection_status != 0) {
+                // 🟡 Yellow: Protection / Alarm active
+                setRgbLed(40, 32, 0);
+            } else if (g_bms.soc_percent >= 100) {
+                // ⚪ White: 100% Fully Charged
+                setRgbLed(25, 25, 25);
+            } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
+                // 🩵 Cyan: Active Charging (+25A)
+                setRgbLed(0, 35, 35);
+            } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
+                // 🟠 Orange: Active Discharging (-17A)
+                setRgbLed(40, 14, 0);
+            } else {
+                // 🟢 Green: Standby / Idle (0A, connected)
+                setRgbLed(0, 35, 0);
+            }
         }
     }
 }
@@ -137,6 +246,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         updateStatusLed();
         Serial.printf("[BLE] Client disconnected (reason: %d). Restarting advertising...\n", reason);
         NimBLEDevice::startAdvertising();
+    }
+
+    void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override {
+        Serial.printf("[BLE] MTU negotiated to: %u bytes\n", MTU);
     }
 
     uint32_t onPassKeyDisplay() override {
@@ -640,6 +753,762 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 // ============================================================================
+// Modbus CRC-16 Calculation (Poly 0xA001, Initial 0xFFFF, Little-Endian)
+// ============================================================================
+uint16_t calculateModbusCRC(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= (uint16_t)data[i];
+        for (int j = 0; j < 8; ++j) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc = crc >> 1;
+            }
+        }
+    }
+    return crc;
+}
+
+// Send BLE frame across all Daly notify characteristics
+void sendDalyBleFrame(const uint8_t* frame, size_t len) {
+    if (!g_deviceConnected) return;
+
+    if (pDalyNotifyFff1) {
+        pDalyNotifyFff1->setValue((uint8_t*)frame, len);
+        pDalyNotifyFff1->notify();
+    }
+    if (pDalyNotifyChar) {
+        pDalyNotifyChar->setValue((uint8_t*)frame, len);
+        pDalyNotifyChar->notify();
+    }
+    if (pDalyNotifyFff4) {
+        pDalyNotifyFff4->setValue((uint8_t*)frame, len);
+        pDalyNotifyFff4->notify();
+    }
+    if (pDalyNotifyFf01) {
+        pDalyNotifyFf01->setValue((uint8_t*)frame, len);
+        pDalyNotifyFf01->notify();
+    }
+    if (pDalyNusTx) {
+        pDalyNusTx->setValue((uint8_t*)frame, len);
+        pDalyNusTx->notify();
+    }
+}
+
+// ============================================================================
+// Daly Modbus Protocol (D2) Implementations (Official Smart BMS App DL-xxxx)
+// ============================================================================
+
+// Status Frame: 62 registers (124 bytes data -> 129 bytes total) or 80 registers (165 bytes total)
+void sendDalyModbusStatusD2(bool is80Regs = false) {
+    uint8_t dataLen = is80Regs ? (80 * 2) : (62 * 2);
+    size_t totalLen = 3 + dataLen + 2;
+    uint8_t frame[180];
+    memset(frame, 0, sizeof(frame));
+
+    frame[0] = 0xD2;
+    frame[1] = 0x03;
+    frame[2] = dataLen;
+
+    // Registers 0..31 (offset 3): Cell voltages 1..32 in mV
+    for (int i = 0; i < 8 && i < g_bms.cell_count; ++i) {
+        frame[3 + i * 2]     = (uint8_t)(g_bms.cell_mv[i] >> 8);
+        frame[3 + i * 2 + 1] = (uint8_t)(g_bms.cell_mv[i] & 0xFF);
+    }
+
+    // Registers 32..39 (offset 67): Temperatures 1..8 in °C with +40 offset
+    int t1 = (int)((g_bms.ntc1_temp_01k - 2731) / 10) + 40;
+    int t2 = (int)((g_bms.ntc2_temp_01k - 2731) / 10) + 40;
+    int t3 = (int)((g_bms.ntc3_temp_01k - 2731) / 10) + 40;
+    frame[67] = (uint8_t)(t1 >> 8); frame[68] = (uint8_t)(t1 & 0xFF);
+    frame[69] = (uint8_t)(t2 >> 8); frame[70] = (uint8_t)(t2 & 0xFF);
+    frame[71] = (uint8_t)(t3 >> 8); frame[72] = (uint8_t)(t3 & 0xFF);
+
+    // Register 40 (offset 83): Total pack voltage in 0.1V
+    uint16_t v01 = g_bms.pack_voltage_10mv / 10;
+    frame[83] = (uint8_t)(v01 >> 8);
+    frame[84] = (uint8_t)(v01 & 0xFF);
+
+    // Register 41 (offset 85): Current in 0.1A with 30000 offset
+    int32_t cur01a = g_bms.current_10ma / 10;
+    int32_t curVal = 30000 + cur01a;
+    if (curVal < 0) curVal = 0;
+    if (curVal > 65535) curVal = 65535;
+    frame[85] = (uint8_t)((uint16_t)curVal >> 8);
+    frame[86] = (uint8_t)((uint16_t)curVal & 0xFF);
+
+    // Register 42 (offset 87): State of Charge (SOC) in 0.1%
+    uint16_t socVal = (uint16_t)g_bms.soc_percent * 10;
+    frame[87] = (uint8_t)(socVal >> 8);
+    frame[88] = (uint8_t)(socVal & 0xFF);
+
+    // Extremes and averages
+    uint16_t maxV = 0, minV = 9999, sumV = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (g_bms.cell_mv[i] > maxV) maxV = g_bms.cell_mv[i];
+        if (g_bms.cell_mv[i] < minV) minV = g_bms.cell_mv[i];
+        sumV += g_bms.cell_mv[i];
+    }
+    uint16_t avgV = sumV / 8;
+    uint16_t deltaV = maxV - minV;
+
+    // Register 43 (offset 89): Max cell voltage (mV)
+    frame[89] = (uint8_t)(maxV >> 8);
+    frame[90] = (uint8_t)(maxV & 0xFF);
+
+    // Register 44 (offset 91): Min cell voltage (mV)
+    frame[91] = (uint8_t)(minV >> 8);
+    frame[92] = (uint8_t)(minV & 0xFF);
+
+    // Register 45 (offset 93): Max cell temp (+40)
+    frame[93] = (uint8_t)(t1 >> 8);
+    frame[94] = (uint8_t)(t1 & 0xFF);
+
+    // Register 46 (offset 95): Min cell temp (+40)
+    frame[95] = (uint8_t)(t2 >> 8);
+    frame[96] = (uint8_t)(t2 & 0xFF);
+
+    // Register 47 (offset 97): Charge/discharge status (0=idle, 1=chg, 2=dsg)
+    uint8_t st = (g_bms.current_10ma > 50) ? 1 : ((g_bms.current_10ma < -50) ? 2 : 0);
+    frame[97] = 0x00;
+    frame[98] = st;
+
+    // Register 48 (offset 99): Remaining capacity (0.1 Ah)
+    uint16_t remAh01 = (uint32_t)g_bms.remain_cap_10mah / 10;
+    frame[99] = (uint8_t)(remAh01 >> 8);
+    frame[100] = (uint8_t)(remAh01 & 0xFF);
+
+    // Register 49 (offset 101): Cell count
+    frame[101] = 0x00;
+    frame[102] = g_bms.cell_count;
+
+    // Register 50 (offset 103): Temp sensor count
+    frame[103] = 0x00;
+    frame[104] = g_bms.ntc_count;
+
+    // Register 51 (offset 105): Charging cycles
+    frame[105] = (uint8_t)(g_bms.cycle_count >> 8);
+    frame[106] = (uint8_t)(g_bms.cycle_count & 0xFF);
+
+    // Register 52 (offset 107): Balancer status (0: off, 1: on)
+    frame[107] = 0x00;
+    frame[108] = (g_bms.balance_low != 0 || g_bms.balance_high != 0) ? 0x01 : 0x00;
+
+    // Register 53 (offset 109): Charging MOS status (0: off, 1: on)
+    frame[109] = 0x00;
+    frame[110] = (g_bms.fet_status & 0x01) ? 0x01 : 0x00;
+
+    // Register 54 (offset 111): Discharging MOS status (0: off, 1: on)
+    frame[111] = 0x00;
+    frame[112] = (g_bms.fet_status & 0x02) ? 0x01 : 0x00;
+
+    // Register 55 (offset 113): Average cell voltage (mV)
+    frame[113] = (uint8_t)(avgV >> 8);
+    frame[114] = (uint8_t)(avgV & 0xFF);
+
+    // Register 56 (offset 115): Delta cell voltage (mV)
+    frame[115] = (uint8_t)(deltaV >> 8);
+    frame[116] = (uint8_t)(deltaV & 0xFF);
+
+    // Register 57 (offset 117): Power (Watts)
+    float packVf = g_bms.pack_voltage_10mv / 100.0f;
+    float currAf = fabs(g_bms.current_10ma / 100.0f);
+    uint16_t pwrW = (uint16_t)(packVf * currAf);
+    frame[117] = (uint8_t)(pwrW >> 8);
+    frame[118] = (uint8_t)(pwrW & 0xFF);
+
+    // If 80 registers:
+    if (is80Regs) {
+        frame[127] = (uint8_t)(t3 >> 8); frame[128] = (uint8_t)(t3 & 0xFF); // MOS Temp
+        frame[129] = (uint8_t)(t1 >> 8); frame[130] = (uint8_t)(t1 & 0xFF); // Board Temp
+    }
+
+    uint16_t crc = calculateModbusCRC(frame, 3 + dataLen);
+    frame[3 + dataLen]     = (uint8_t)(crc & 0xFF);
+    frame[3 + dataLen + 1] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, totalLen);
+
+    if (Serial) {
+        Serial.printf("[DALY D2 TX -> Status %u regs] (%u bytes)\n", is80Regs ? 80 : 62, (unsigned int)totalLen);
+    }
+}
+
+// Version Frame (Registers 0x00A9..0x00C8: 32 regs software + 32 regs hardware = 64 bytes payload)
+void sendDalyModbusVersionD2() {
+    uint8_t frame[70];
+    memset(frame, 0, sizeof(frame));
+
+    frame[0] = 0xD2;
+    frame[1] = 0x03;
+    frame[2] = 0x40; // 64 bytes
+
+    const char* sw = "401804015491";
+    memcpy(&frame[3], sw, strlen(sw));
+
+    const char* hw = "DALY-BMS-8S200A";
+    memcpy(&frame[35], hw, strlen(hw));
+
+    uint16_t crc = calculateModbusCRC(frame, 67);
+    frame[67] = (uint8_t)(crc & 0xFF);
+    frame[68] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, 69);
+    Serial.println("[DALY D2 TX -> Version (sw: 401804015491, hw: DALY-BMS-8S200A)] (69 bytes)");
+}
+
+// Settings Frame (Registers 0x0080..0x00A8: 41 registers = 82 bytes payload)
+void sendDalyModbusSettingsD2() {
+    uint8_t frame[90];
+    memset(frame, 0, sizeof(frame));
+
+    frame[0] = 0xD2;
+    frame[1] = 0x03;
+    frame[2] = 0x52; // 82 bytes
+
+    auto setReg = [&](size_t regIdx, uint16_t val) {
+        frame[3 + regIdx * 2]     = (uint8_t)(val >> 8);
+        frame[3 + regIdx * 2 + 1] = (uint8_t)(val & 0xFF);
+    };
+
+    setReg(0, (g_bms.nominal_cap_10mah / 10)); // 0x80: Rated capacity (0.1Ah -> 2000 = 200.0 Ah)
+    setReg(1, 3200);                           // 0x81: Cell reference voltage (3200 mV)
+    setReg(2, 1);                              // 0x82: Boards (1)
+    setReg(3, g_bms.cell_count);               // 0x83: Cell count (8)
+    setReg(4, 0);                              // 0x84: Board 2 cells (0)
+    setReg(5, 0);                              // 0x85: Board 3 cells (0)
+    setReg(6, g_bms.ntc_count);                // 0x86: Board 1 temp sensors (3)
+    setReg(7, 0);
+    setReg(8, 0);
+    setReg(9, 0);                              // 0x89: Battery type (0 = LiFePO4)
+    setReg(10, 7200);                          // 0x8A: Sleep wait time (7200s)
+    setReg(11, 3600);                          // 0x8B: Warning cell overvoltage (3600mV)
+    setReg(12, 3650);                          // 0x8C: Critical cell overvoltage (3650mV)
+    setReg(13, 2600);                          // 0x8D: Warning cell undervoltage (2600mV)
+    setReg(14, 2500);                          // 0x8E: Critical cell undervoltage (2500mV)
+    setReg(15, 288);                           // 0x8F: Warning total overvoltage (28.8V)
+    setReg(16, 292);                           // 0x90: Critical total overvoltage (29.2V)
+    setReg(17, 216);                           // 0x91: Warning total undervoltage (21.6V)
+    setReg(18, 200);                           // 0x92: Critical total undervoltage (20.0V)
+    setReg(19, 31000);                         // 0x93: Warning charge current (100A)
+    setReg(20, 31200);                         // 0x94: Critical charge current (120A)
+    setReg(21, 28000);                         // 0x95: Warning discharge current (200A)
+    setReg(22, 27800);                         // 0x96: Critical discharge current (220A)
+    setReg(23, 990);                           // 0x97: Warning SOC high (99.0%)
+    setReg(24, 100);                           // 0x98: Warning SOC low (10.0%)
+
+    uint16_t crc = calculateModbusCRC(frame, 85);
+    frame[85] = (uint8_t)(crc & 0xFF);
+    frame[86] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, 87);
+    Serial.println("[DALY D2 TX -> Settings (82 bytes payload)] (87 bytes)");
+}
+
+// Balancer switch status (Register 0x00CF)
+void sendDalyModbusBalancerD2(bool on) {
+    uint8_t frame[7];
+    frame[0] = 0xD2;
+    frame[1] = 0x03;
+    frame[2] = 0x02;
+    frame[3] = 0x00;
+    frame[4] = on ? 0x01 : 0x00;
+    uint16_t crc = calculateModbusCRC(frame, 5);
+    frame[5] = (uint8_t)(crc & 0xFF);
+    frame[6] = (uint8_t)((crc >> 8) & 0xFF);
+    sendDalyBleFrame(frame, 7);
+}
+
+// Password response (Register 0x00C9)
+void sendDalyModbusPasswordD2() {
+    uint8_t frame[11];
+    frame[0] = 0xD2;
+    frame[1] = 0x03;
+    frame[2] = 0x06;
+    const char* pwd = "123456";
+    memcpy(&frame[3], pwd, 6);
+    uint16_t crc = calculateModbusCRC(frame, 9);
+    frame[9]  = (uint8_t)(crc & 0xFF);
+    frame[10] = (uint8_t)((crc >> 8) & 0xFF);
+    sendDalyBleFrame(frame, 11);
+}
+
+// ============================================================================
+// Daly Protocol 81 Implementations
+// ============================================================================
+void sendDalyP81Cells() {
+    uint8_t frame[140];
+    memset(frame, 0, sizeof(frame));
+
+    frame[0] = 0x81;
+    frame[1] = 0x03;
+    frame[2] = 0x80; // 128 bytes (64 registers)
+
+    auto setReg = [&](size_t regIdx, uint16_t val) {
+        frame[3 + regIdx * 2]     = (uint8_t)(val >> 8);
+        frame[3 + regIdx * 2 + 1] = (uint8_t)(val & 0xFF);
+    };
+
+    for (int i = 0; i < 8; ++i) {
+        setReg(i, g_bms.cell_mv[i]);
+    }
+
+    int t1 = (int)((g_bms.ntc1_temp_01k - 2731) / 10) + 40;
+    int t2 = (int)((g_bms.ntc2_temp_01k - 2731) / 10) + 40;
+    int t3 = (int)((g_bms.ntc3_temp_01k - 2731) / 10) + 40;
+    setReg(48, t1);
+    setReg(49, t2);
+    setReg(50, t3);
+
+    setReg(56, g_bms.pack_voltage_10mv / 10);
+    int32_t cur01a = g_bms.current_10ma / 10;
+    setReg(57, (uint16_t)(30000 + cur01a));
+    setReg(58, (uint16_t)g_bms.soc_percent * 10);
+
+    float packVf = g_bms.pack_voltage_10mv / 100.0f;
+    float currAf = fabs(g_bms.current_10ma / 100.0f);
+    setReg(59, (uint16_t)(packVf * currAf));
+    setReg(60, g_bms.cell_count);
+    setReg(61, g_bms.ntc_count);
+    setReg(62, g_bms.cycle_count);
+
+    uint16_t crc = calculateModbusCRC(frame, 131);
+    frame[131] = (uint8_t)(crc & 0xFF);
+    frame[132] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, 133);
+}
+
+void sendDalyP81Status() {
+    uint8_t frame[140];
+    memset(frame, 0, sizeof(frame));
+
+    frame[0] = 0x81;
+    frame[1] = 0x03;
+    frame[2] = 0x7C; // 124 bytes (62 registers)
+
+    auto setOffsetReg = [&](uint8_t reg, uint16_t val) {
+        size_t idx = (reg - 0x41);
+        frame[3 + idx * 2]     = (uint8_t)(val >> 8);
+        frame[3 + idx * 2 + 1] = (uint8_t)(val & 0xFF);
+    };
+
+    int t1 = (int)((g_bms.ntc1_temp_01k - 2731) / 10) + 40;
+    int t2 = (int)((g_bms.ntc2_temp_01k - 2731) / 10) + 40;
+
+    setOffsetReg(0x43, t1);
+    setOffsetReg(0x44, 1);
+    setOffsetReg(0x45, t2);
+    setOffsetReg(0x46, 2);
+
+    uint16_t st = (g_bms.current_10ma > 50) ? 1 : ((g_bms.current_10ma < -50) ? 2 : 0);
+    setOffsetReg(0x48, st);
+    setOffsetReg(0x4B, (uint16_t)(g_bms.remain_cap_10mah / 10));
+    setOffsetReg(0x4C, g_bms.cycle_count);
+    setOffsetReg(0x4D, (g_bms.balance_low != 0 || g_bms.balance_high != 0) ? 1 : 0);
+    setOffsetReg(0x4E, 30000);
+
+    uint16_t crc = calculateModbusCRC(frame, 127);
+    frame[127] = (uint8_t)(crc & 0xFF);
+    frame[128] = (uint8_t)((crc >> 8) & 0xFF);
+
+    sendDalyBleFrame(frame, 129);
+}
+
+// ============================================================================
+// Legacy Daly Protocol (0xA5) Responses (For Universal Diagnostic Monitor)
+// ============================================================================
+void sendDalyResponse(uint8_t cmd, const uint8_t* data8) {
+    if (!g_deviceConnected) return;
+
+    uint8_t frame[13];
+    frame[0] = 0xA5;
+    frame[1] = 0x01; // From BMS (Address 0x01)
+    frame[2] = cmd;
+    frame[3] = 0x08; // 8 bytes data
+    if (data8) {
+        memcpy(&frame[4], data8, 8);
+    } else {
+        memset(&frame[4], 0, 8);
+    }
+    uint8_t sum = 0;
+    for (int i = 0; i < 12; ++i) sum += frame[i];
+    frame[12] = sum;
+
+    sendDalyBleFrame(frame, 13);
+
+    if (Serial) {
+        Serial.printf("[DALY A5 TX -> Cmd 0x%02X] (13 bytes)\n", cmd);
+    }
+}
+
+void sendDalyTelemetry90() {
+    uint8_t data[8];
+    uint16_t v01 = g_bms.pack_voltage_10mv / 10; // 0.1V units
+    data[0] = (uint8_t)(v01 >> 8);
+    data[1] = (uint8_t)(v01 & 0xFF);
+    data[2] = data[0]; // Acquisition voltage
+    data[3] = data[1];
+
+    // Current in 0.1A units with offset 30000
+    int32_t cur01a = g_bms.current_10ma / 10;
+    int32_t val30000 = 30000 + cur01a;
+    if (val30000 < 0) val30000 = 0;
+    if (val30000 > 65535) val30000 = 65535;
+    data[4] = (uint8_t)((uint16_t)val30000 >> 8);
+    data[5] = (uint8_t)((uint16_t)val30000 & 0xFF);
+
+    // SoC in 0.1% units
+    uint16_t socDaly = (uint16_t)g_bms.soc_percent * 10;
+    data[6] = (uint8_t)(socDaly >> 8);
+    data[7] = (uint8_t)(socDaly & 0xFF);
+
+    sendDalyResponse(0x90, data);
+}
+
+void sendDalyExtremes91() {
+    uint8_t data[8];
+    uint16_t maxV = 0, minV = 9999;
+    uint8_t maxIdx = 1, minIdx = 1;
+    for (uint8_t i = 0; i < g_bms.cell_count && i < 8; ++i) {
+        if (g_bms.cell_mv[i] > maxV) { maxV = g_bms.cell_mv[i]; maxIdx = i + 1; }
+        if (g_bms.cell_mv[i] < minV) { minV = g_bms.cell_mv[i]; minIdx = i + 1; }
+    }
+    data[0] = (uint8_t)(maxV >> 8);
+    data[1] = (uint8_t)(maxV & 0xFF);
+    data[2] = maxIdx;
+    data[3] = (uint8_t)(minV >> 8);
+    data[4] = (uint8_t)(minV & 0xFF);
+    data[5] = minIdx;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    sendDalyResponse(0x91, data);
+}
+
+void sendDalyTemps92() {
+    uint8_t data[8];
+    int8_t t1 = (int8_t)(((int)g_bms.ntc1_temp_01k - 2731) / 10);
+    int8_t t2 = (int8_t)(((int)g_bms.ntc2_temp_01k - 2731) / 10);
+    data[0] = (uint8_t)(t1 + 40);
+    data[1] = 1;
+    data[2] = (uint8_t)(t2 + 40);
+    data[3] = 2;
+    data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 0;
+    sendDalyResponse(0x92, data);
+}
+
+void sendDalyMosStatus93() {
+    uint8_t data[8];
+    if (g_bms.current_10ma > 50) data[0] = 1;      // Charge
+    else if (g_bms.current_10ma < -50) data[0] = 2;// Discharge
+    else data[0] = 0;                             // Stationary
+
+    data[1] = (g_bms.fet_status & 0x01) ? 1 : 0;
+    data[2] = (g_bms.fet_status & 0x02) ? 1 : 0;
+    static uint8_t s_bmsLife = 0;
+    data[3] = s_bmsLife++;
+    uint32_t remMah = (uint32_t)g_bms.remain_cap_10mah * 10;
+    data[4] = (uint8_t)(remMah >> 24);
+    data[5] = (uint8_t)(remMah >> 16);
+    data[6] = (uint8_t)(remMah >> 8);
+    data[7] = (uint8_t)(remMah & 0xFF);
+    sendDalyResponse(0x93, data);
+}
+
+void sendDalyStatus94() {
+    uint8_t data[8];
+    data[0] = g_bms.cell_count;
+    data[1] = g_bms.ntc_count;
+    data[2] = (g_bms.mode == MODE_CHARGE) ? 1 : 0;
+    data[3] = (g_bms.mode == MODE_DISCHARGE) ? 1 : 0;
+    data[4] = 0;
+    data[5] = (uint8_t)(g_bms.cycle_count >> 8);
+    data[6] = (uint8_t)(g_bms.cycle_count & 0xFF);
+    data[7] = 0;
+    sendDalyResponse(0x94, data);
+}
+
+void sendDalyCells95() {
+    // 8S cells -> 3 frames (3 cells per frame)
+    uint8_t f1[8] = {
+        1,
+        (uint8_t)(g_bms.cell_mv[0] >> 8), (uint8_t)(g_bms.cell_mv[0] & 0xFF),
+        (uint8_t)(g_bms.cell_mv[1] >> 8), (uint8_t)(g_bms.cell_mv[1] & 0xFF),
+        (uint8_t)(g_bms.cell_mv[2] >> 8), (uint8_t)(g_bms.cell_mv[2] & 0xFF),
+        0
+    };
+    sendDalyResponse(0x95, f1);
+    delay(20);
+
+    uint8_t f2[8] = {
+        2,
+        (uint8_t)(g_bms.cell_mv[3] >> 8), (uint8_t)(g_bms.cell_mv[3] & 0xFF),
+        (uint8_t)(g_bms.cell_mv[4] >> 8), (uint8_t)(g_bms.cell_mv[4] & 0xFF),
+        (uint8_t)(g_bms.cell_mv[5] >> 8), (uint8_t)(g_bms.cell_mv[5] & 0xFF),
+        0
+    };
+    sendDalyResponse(0x95, f2);
+    delay(20);
+
+    uint8_t f3[8] = {
+        3,
+        (uint8_t)(g_bms.cell_mv[6] >> 8), (uint8_t)(g_bms.cell_mv[6] & 0xFF),
+        (uint8_t)(g_bms.cell_mv[7] >> 8), (uint8_t)(g_bms.cell_mv[7] & 0xFF),
+        0, 0,
+        0
+    };
+    sendDalyResponse(0x95, f3);
+}
+
+void sendDalySensors96() {
+    int8_t t1 = (int8_t)(((int)g_bms.ntc1_temp_01k - 2731) / 10);
+    int8_t t2 = (int8_t)(((int)g_bms.ntc2_temp_01k - 2731) / 10);
+    int8_t t3 = (int8_t)(((int)g_bms.ntc3_temp_01k - 2731) / 10);
+    uint8_t data[8] = {
+        1,
+        (uint8_t)(t1 + 40),
+        (uint8_t)(t2 + 40),
+        (uint8_t)(t3 + 40),
+        0, 0, 0, 0
+    };
+    sendDalyResponse(0x96, data);
+}
+
+void sendDalyBalancing97() {
+    uint8_t data[8] = {
+        (uint8_t)(g_bms.balance_high >> 8),
+        (uint8_t)(g_bms.balance_high & 0xFF),
+        (uint8_t)(g_bms.balance_low >> 8),
+        (uint8_t)(g_bms.balance_low & 0xFF),
+        0, 0, 0, 0
+    };
+    sendDalyResponse(0x97, data);
+}
+
+void sendDalyFaults98() {
+    uint8_t data[8] = { 0 };
+    sendDalyResponse(0x98, data);
+}
+
+void sendAllDalyTelemetry() {
+    sendDalyTelemetry90();
+    delay(20);
+    sendDalyExtremes91();
+    delay(20);
+    sendDalyTemps92();
+    delay(20);
+    sendDalyMosStatus93();
+    delay(20);
+    sendDalyStatus94();
+    delay(20);
+    sendDalyCells95();
+    delay(20);
+    sendDalySensors96();
+    delay(20);
+    sendDalyBalancing97();
+    delay(20);
+    sendDalyFaults98();
+}
+
+class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+        Serial.printf("[DALY BLE] Client subscribed to %s (subValue: %u)\n", 
+                      pCharacteristic->getUUID().toString().c_str(), subValue);
+        if (subValue > 0) {
+            delay(50);
+            sendDalyModbusStatusD2(false);
+            delay(20);
+            sendDalyModbusVersionD2();
+            delay(20);
+            sendDalyP81Cells();
+            delay(20);
+            sendAllDalyTelemetry();
+        }
+    }
+
+    void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        Serial.printf("[DALY BLE] Client READ on %s\n", pCharacteristic->getUUID().toString().c_str());
+        sendDalyModbusStatusD2(false);
+    }
+
+    void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        std::string rxVal = pCharacteristic->getValue();
+        if (rxVal.empty()) return;
+
+        const uint8_t* buf = (const uint8_t*)rxVal.data();
+        size_t len = rxVal.length();
+
+        Serial.printf("[DALY RX <- Client on %s] (%u bytes): ", 
+                      pCharacteristic->getUUID().toString().c_str(), (unsigned int)len);
+        for (size_t i = 0; i < len; ++i) Serial.printf("%02X ", buf[i]);
+        Serial.println();
+
+        // 1. Modbus Protocol 0xD2 handler (Smart BMS App)
+        if (len >= 6 && buf[0] == 0xD2) {
+            uint8_t func = buf[1];
+            uint16_t addr = (uint16_t(buf[2]) << 8) | buf[3];
+            uint16_t val  = (uint16_t(buf[4]) << 8) | buf[5];
+
+            if (func == 0x03) {
+                // Read Holding Registers
+                Serial.printf("[DALY D2 READ] Addr 0x%04X, Count %u\n", addr, val);
+                if (addr == 0x0000) {
+                    sendDalyModbusStatusD2(val >= 80);
+                } else if (addr == 0x00A9) {
+                    sendDalyModbusVersionD2();
+                } else if (addr == 0x0080) {
+                    sendDalyModbusSettingsD2();
+                } else if (addr == 0x00CF) {
+                    sendDalyModbusBalancerD2(g_bms.balance_low != 0);
+                } else if (addr == 0x00C9) {
+                    sendDalyModbusPasswordD2();
+                } else {
+                    sendDalyModbusStatusD2(false);
+                }
+                return;
+            } else if (func == 0x06) {
+                // Write Single Register
+                Serial.printf("[DALY D2 WRITE] Addr 0x%04X, Val 0x%04X\n", addr, val);
+                if (addr == 0x00CF) {
+                    bool bal = (val != 0);
+                    g_bms.balance_low = bal ? 0x000F : 0x0000;
+                    Serial.printf("[DALY D2] Balancer %s\n", bal ? "ENABLED" : "DISABLED");
+                } else if (addr == 0x00D9) {
+                    bool dsg = (val != 0);
+                    if (dsg) g_bms.fet_status |= 0x02; else g_bms.fet_status &= ~0x02;
+                    updateStatusLed();
+                    Serial.printf("[DALY D2] Discharge FET %s\n", dsg ? "ENABLED" : "DISABLED");
+                } else if (addr == 0x00DA) {
+                    bool chg = (val != 0);
+                    if (chg) g_bms.fet_status |= 0x01; else g_bms.fet_status &= ~0x01;
+                    updateStatusLed();
+                    Serial.printf("[DALY D2] Charge FET %s\n", chg ? "ENABLED" : "DISABLED");
+                }
+                sendDalyBleFrame(buf, (len >= 8) ? 8 : len);
+                return;
+            }
+        }
+
+        // 2. Protocol 0x81 handler
+        if (len >= 6 && buf[0] == 0x81) {
+            uint8_t func = buf[1];
+            uint16_t addr = (uint16_t(buf[2]) << 8) | buf[3];
+            uint16_t val  = (uint16_t(buf[4]) << 8) | buf[5];
+
+            Serial.printf("[DALY P81 READ] Func 0x%02X, Addr 0x%04X, Val %u\n", func, addr, val);
+            if (addr == 0x0000) {
+                sendDalyP81Cells();
+            } else if (addr == 0x0041) {
+                sendDalyP81Status();
+            } else if (addr == 0x0178) {
+                sendDalyModbusVersionD2();
+            } else {
+                sendDalyP81Cells();
+            }
+            return;
+        }
+
+        // 3. Legacy Protocol 0xA5 handler (Universal Monitor)
+        for (size_t i = 0; i + 13 <= len; ++i) {
+            if (buf[i] == 0xA5) {
+                buf = &buf[i];
+                len = 13;
+                break;
+            }
+        }
+
+        if (len >= 13 && buf[0] == 0xA5) {
+            uint8_t cmd = buf[2];
+            uint8_t expectedCrc = buf[12];
+            uint8_t sum = 0;
+            for (size_t i = 0; i < 12; ++i) sum += buf[i];
+            if (sum != expectedCrc) {
+                Serial.printf("[DALY CRC] Invalid CRC: calc=0x%02X, expected=0x%02X\n", sum, expectedCrc);
+                return;
+            }
+
+            switch (cmd) {
+                case 0x90: sendDalyTelemetry90(); break;
+                case 0x91: sendDalyExtremes91(); break;
+                case 0x92: sendDalyTemps92(); break;
+                case 0x93: sendDalyMosStatus93(); break;
+                case 0x94: sendDalyStatus94(); break;
+                case 0x95: sendDalyCells95(); break;
+                case 0x96: sendDalySensors96(); break;
+                case 0x97: sendDalyBalancing97(); break;
+                case 0x98: sendDalyFaults98(); break;
+
+                case 0xD9: { // Discharge MOS control
+                    uint8_t state = buf[4];
+                    if (state == 0x01) {
+                        g_bms.fet_status |= 0x02;
+                        Serial.println("[DALY] Discharge MOS ENABLED");
+                    } else {
+                        g_bms.fet_status &= ~0x02;
+                        Serial.println("[DALY] Discharge MOS DISABLED");
+                    }
+                    updateStatusLed();
+                    uint8_t ack[8] = { state, 0, 0, 0, 0, 0, 0, 0 };
+                    sendDalyResponse(0xD9, ack);
+                    break;
+                }
+
+                case 0xDA: { // Charge MOS control
+                    uint8_t state = buf[4];
+                    if (state == 0x01) {
+                        g_bms.fet_status |= 0x01;
+                        Serial.println("[DALY] Charge MOS ENABLED");
+                    } else {
+                        g_bms.fet_status &= ~0x01;
+                        Serial.println("[DALY] Charge MOS DISABLED");
+                    }
+                    updateStatusLed();
+                    uint8_t ack[8] = { state, 0, 0, 0, 0, 0, 0, 0 };
+                    sendDalyResponse(0xDA, ack);
+                    break;
+                }
+
+                case 0x21:
+                case 0x51: { // Set rated capacity (mAh)
+                    uint32_t mah = ((uint32_t)buf[4] << 24) | ((uint32_t)buf[5] << 16) | ((uint32_t)buf[6] << 8) | buf[7];
+                    if (mah > 0) {
+                        g_bms.nominal_cap_10mah = mah / 10;
+                        g_bms.cycle_cap_10mah = (g_bms.nominal_cap_10mah * 8) / 10;
+                        Serial.printf("[DALY] Nominal Capacity updated: %.1f Ah\n", g_bms.nominal_cap_10mah / 100.0f);
+                    }
+                    sendDalyResponse(cmd, &buf[4]);
+                    break;
+                }
+
+                case 0x50:
+                case 0xD6: { // Set cell count
+                    uint8_t cnt = buf[4];
+                    if (cnt >= 3 && cnt <= 32) {
+                        g_bms.cell_count = cnt;
+                        Serial.printf("[DALY] Cell count updated: %uS\n", cnt);
+                    }
+                    sendDalyResponse(cmd, &buf[4]);
+                    break;
+                }
+
+                default: {
+                    Serial.printf("[DALY] Unhandled command: 0x%02X\n", cmd);
+                    uint8_t emptyAck[8] = { 0 };
+                    sendDalyResponse(cmd, emptyAck);
+                    break;
+                }
+            }
+            return;
+        }
+
+        // Generic fallback
+        Serial.println("[DALY] Unrecognized frame -> sending status frame as fallback");
+        sendDalyModbusStatusD2(false);
+    }
+};
+
+// ============================================================================
 // Setup
 // ============================================================================
 void setup() {
@@ -647,14 +1516,38 @@ void setup() {
     Serial.setTxTimeoutMs(0); // Non-blocking USB CDC output - never block BLE thread
     delay(500);
 
+    pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+
+    initDoubleResetAndMode();
+
+    // Flash LED 3 times on boot to indicate selected mode
+    // JBD: 3 Red flashes
+    // Daly: 3 Magenta flashes
+    for (int i = 0; i < 3; ++i) {
+        if (g_proto == PROTO_DALY) {
+            setRgbLed(60, 0, 60); // Magenta
+        } else {
+            setRgbLed(60, 0, 0);  // Red
+        }
+        delay(120);
+        setRgbLed(0, 0, 0);
+        delay(100);
+    }
+
     Serial.println("\n=======================================================");
-    Serial.println("   ESP32-C6 JBD BMS BLE Emulator (DB24SF01 / 8S200A)   ");
+    if (g_proto == PROTO_DALY) {
+        Serial.println("     ESP32-C6 DALY Smart BMS BLE Emulator             ");
+        Serial.printf("Device Name: %s\n", DALY_DEVICE_NAME);
+    } else {
+        Serial.println("   ESP32-C6 JBD BMS BLE Emulator (DB24SF01 / 8S200A)   ");
+        Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
+        Serial.printf("Security PIN: %s (Passkey: 123456)\n", JBD_PIN_CODE);
+    }
     Serial.println("=======================================================");
-    Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
+    const uint8_t* activeMac = (g_proto == PROTO_DALY) ? DALY_BT_MAC : TARGET_BT_MAC;
     Serial.printf("Target MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                  TARGET_BT_MAC[0], TARGET_BT_MAC[1], TARGET_BT_MAC[2],
-                  TARGET_BT_MAC[3], TARGET_BT_MAC[4], TARGET_BT_MAC[5]);
-    Serial.printf("Security PIN: %s (Passkey: 123456)\n", JBD_PIN_CODE);
+                  activeMac[0], activeMac[1], activeMac[2],
+                  activeMac[3], activeMac[4], activeMac[5]);
     Serial.printf("Pack Voltage: %.2fV | SOC: %u%% | Cells: %uS\n", 
                   g_bms.pack_voltage_10mv / 100.0f, g_bms.soc_percent, g_bms.cell_count);
     Serial.printf("MOSFET Status: 0x%02X (Charge: %s, Discharge: %s)\n",
@@ -663,106 +1556,239 @@ void setup() {
                   (g_bms.fet_status & 0x02) ? "ON" : "OFF");
     Serial.println("=======================================================\n");
 
-    // Configure Custom Bluetooth MAC Address (A5:C2:3A:26:F2:C2)
-    uint8_t custom_base_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC0};
-    esp_base_mac_addr_set(custom_base_mac);
-    uint8_t custom_bt_mac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+    // Configure Custom Bluetooth MAC Address
+    uint8_t custom_bt_mac[6];
+    memcpy(custom_bt_mac, activeMac, 6);
     esp_iface_mac_addr_set(custom_bt_mac, ESP_MAC_BT);
 
-    // Initialize NimBLE Device
-    NimBLEDevice::init(BLE_DEVICE_NAME);
-    NimBLEDevice::setMTU(512);
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum TX power (+9dBm)
+    if (g_proto == PROTO_DALY) {
+        // Initialize NimBLE Device for Daly
+        NimBLEDevice::init(DALY_DEVICE_NAME);
+        NimBLEDevice::setMTU(512);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum TX power (+9dBm)
+        NimBLEDevice::setSecurityAuth(false, false, false);
 
-    // Open pairing for standard JBD app compatibility (app-layer PIN verification)
-    NimBLEDevice::setSecurityAuth(false, false, false);
+        Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
 
-    Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
+        // Create Server
+        pServer = NimBLEDevice::createServer();
+        pServer->setCallbacks(new ServerCallbacks());
 
-    // Create Server
-    pServer = NimBLEDevice::createServer();
-    pServer->setCallbacks(new ServerCallbacks());
+        // Primary Daly Service 0xFFE0
+        NimBLEService* pDalyService = pServer->createService(NimBLEUUID(DALY_SERVICE_UUID));
+        pDalyNotifyChar = pDalyService->createCharacteristic(
+            NimBLEUUID(DALY_NOTIFY_CHAR_UUID),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pDalyNotifyChar->setCallbacks(new DalyWriteCallbacks());
 
-    // 1. Primary Service 0xFF00 (Classic & Standard JBD / Xiaoxiang)
-    NimBLEService* pService = pServer->createService(NimBLEUUID(SERVICE_UUID));
-    pNotifyChar = pService->createCharacteristic(
-        NimBLEUUID(NOTIFY_CHAR_UUID),
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
-    );
-    pWriteChar = pService->createCharacteristic(
-        NimBLEUUID(WRITE_CHAR_UUID),
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-    );
-    pWriteChar->setCallbacks(new WriteCallbacks());
+        pDalyWriteChar = pDalyService->createCharacteristic(
+            NimBLEUUID(DALY_WRITE_CHAR_UUID),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pDalyWriteChar->setCallbacks(new DalyWriteCallbacks());
 
-    // 2. Secondary Service 0xFFF0 (Jiabaida New Revision)
-    NimBLEService* pServiceFff0 = pServer->createService(NimBLEUUID(SERVICE_FFF0_UUID));
-    pNotifyFff1 = pServiceFff0->createCharacteristic(
-        NimBLEUUID(NOTIFY_FFF1_UUID),
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
-    );
-    pWriteFff2 = pServiceFff0->createCharacteristic(
-        NimBLEUUID(WRITE_FFF2_UUID),
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-    );
-    pWriteFff2->setCallbacks(new WriteCallbacks());
+        // Secondary Daly Service 0xFFF0 (standard for official Daly Bluetooth modules)
+        NimBLEService* pDalyFff0 = pServer->createService(NimBLEUUID((uint16_t)0xFFF0));
+        pDalyNotifyFff1 = pDalyFff0->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFF1),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pDalyNotifyFff1->setCallbacks(new DalyWriteCallbacks());
 
-    // 3. Device Info Service 0x180A
-    NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
-    NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
-        NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
-    );
-    pModelChar->setValue("BS-26A-072-005");
+        pDalyFff2 = pDalyFff0->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFF2),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pDalyFff2->setCallbacks(new DalyWriteCallbacks());
 
-    NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
-        NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
-    );
-    pMfgChar->setValue("JBD BMS");
+        pDalyFff3 = pDalyFff0->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFF3),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pDalyFff3->setCallbacks(new DalyWriteCallbacks());
 
-    NimBLECharacteristic* pSerialChar = pDevInfo->createCharacteristic(
-        NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ
-    );
-    pSerialChar->setValue("BS-26A-072-005");
+        pDalyNotifyFff4 = pDalyFff0->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFF4),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pDalyNotifyFff4->setCallbacks(new DalyWriteCallbacks());
 
-    NimBLECharacteristic* pFwChar = pDevInfo->createCharacteristic(
-        NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ
-    );
-    pFwChar->setValue("V1.3");
+        // Service 0xFF00 (for apps expecting classic 0xFF00 profile)
+        NimBLEService* pDalyFf00 = pServer->createService(NimBLEUUID((uint16_t)0xFF00));
+        pDalyNotifyFf01 = pDalyFf00->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFF01),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pDalyNotifyFf01->setCallbacks(new DalyWriteCallbacks());
 
-    NimBLECharacteristic* pHwChar = pDevInfo->createCharacteristic(
-        NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ
-    );
-    pHwChar->setValue("V1.0");
+        pDalyFf02 = pDalyFf00->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFF02),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pDalyFf02->setCallbacks(new DalyWriteCallbacks());
 
-    // Start Services
-    pServer->start();
+        // Nordic UART Service (6E400001-B5A3-F393-E0A9-E50E24DCCA9E)
+        NimBLEService* pNus = pServer->createService(NimBLEUUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"));
+        pDalyNusTx = pNus->createCharacteristic(
+            NimBLEUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pDalyNusTx->setCallbacks(new DalyWriteCallbacks());
 
-    // Configure Advertising for iOS CoreBluetooth (Strict <= 31 bytes per packet)
-    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+        pDalyNusRx = pNus->createCharacteristic(
+            NimBLEUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pDalyNusRx->setCallbacks(new DalyWriteCallbacks());
 
-    // Primary Advertisement Packet (25 bytes <= 31 bytes): Flags + Complete Name + 16-bit Service UUID
-    NimBLEAdvertisementData advData;
-    advData.setFlags(0x06); // General Discoverable + BR_EDR_NOT_SUPPORTED
-    advData.setName(BLE_DEVICE_NAME);
-    advData.setCompleteServices(NimBLEUUID((uint16_t)0xFF00));
+        // Device Information Service 0x180A (Essential for iOS Daly Smart BMS App)
+        NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
+        NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
+        );
+        pModelChar->setValue("DALY-BMS");
 
-    // Scan Response Packet (24 bytes <= 31 bytes): 128-bit UUID + pure 6-byte MAC in Manufacturer Data
-    NimBLEAdvertisementData scanData;
-    scanData.setCompleteServices(NimBLEUUID("0000FF00-0000-1000-8000-00805F9B34FB"));
-    uint8_t mfgBytes[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
-    scanData.setManufacturerData(std::string((char*)mfgBytes, 6));
+        NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
+        );
+        pMfgChar->setValue("DALY");
 
-    pAdvertising->setAdvertisementData(advData);
-    pAdvertising->setScanResponseData(scanData);
-    pAdvertising->setMinInterval(32); // 20ms advertising interval for instant discovery
-    pAdvertising->setMaxInterval(64); // 40ms
-    pAdvertising->start();
+        NimBLECharacteristic* pSerialChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ
+        );
+        pSerialChar->setValue("401804015491");
 
-    // Initial state: Red LED indicates Advertising / Waiting for client
-    updateStatusLed();
+        NimBLECharacteristic* pFwChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ
+        );
+        pFwChar->setValue("V1.0");
 
-    Serial.println("[BLE] Advertising started successfully as 'DB24SF01' with PIN 123456.");
-    Serial.println("[BLE] Ready for connection from XiaoxiangBMS, JBD BMS, or ESP32 Universal Monitor...");
+        NimBLECharacteristic* pHwChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ
+        );
+        pHwChar->setValue("V1.0");
+
+        pServer->start();
+
+        // Configure Advertising for Daly (0xFFF0 primary + 0xFFE0 scan response)
+        NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+        NimBLEAdvertisementData advData;
+        advData.setFlags(0x06);
+        advData.setName(DALY_DEVICE_NAME);
+        advData.setCompleteServices(NimBLEUUID((uint16_t)0xFFF0));
+
+        NimBLEAdvertisementData scanData;
+        scanData.setCompleteServices(NimBLEUUID(DALY_SERVICE_UUID));
+        scanData.setManufacturerData(std::string((char*)DALY_BT_MAC, 6));
+
+        pAdvertising->setAdvertisementData(advData);
+        pAdvertising->setScanResponseData(scanData);
+        pAdvertising->setMinInterval(32);
+        pAdvertising->setMaxInterval(64);
+        pAdvertising->start();
+
+        updateStatusLed();
+        Serial.printf("[BLE] Advertising started successfully as '%s'.\n", DALY_DEVICE_NAME);
+        Serial.println("[BLE] Ready for connection from Daly BMS App or ESP32 Universal Monitor...");
+    } else {
+        // Initialize NimBLE Device for JBD
+        NimBLEDevice::init(BLE_DEVICE_NAME);
+        NimBLEDevice::setMTU(512);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum TX power (+9dBm)
+        NimBLEDevice::setSecurityAuth(false, false, false);
+
+        Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
+
+        // Create Server
+        pServer = NimBLEDevice::createServer();
+        pServer->setCallbacks(new ServerCallbacks());
+
+        // 1. Primary Service 0xFF00 (Classic & Standard JBD / Xiaoxiang)
+        NimBLEService* pService = pServer->createService(NimBLEUUID(SERVICE_UUID));
+        pNotifyChar = pService->createCharacteristic(
+            NimBLEUUID(NOTIFY_CHAR_UUID),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pWriteChar = pService->createCharacteristic(
+            NimBLEUUID(WRITE_CHAR_UUID),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pWriteChar->setCallbacks(new WriteCallbacks());
+
+        // 2. Secondary Service 0xFFF0 (Jiabaida New Revision)
+        NimBLEService* pServiceFff0 = pServer->createService(NimBLEUUID(SERVICE_FFF0_UUID));
+        pNotifyFff1 = pServiceFff0->createCharacteristic(
+            NimBLEUUID(NOTIFY_FFF1_UUID),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pWriteFff2 = pServiceFff0->createCharacteristic(
+            NimBLEUUID(WRITE_FFF2_UUID),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pWriteFff2->setCallbacks(new WriteCallbacks());
+
+        // 3. Device Info Service 0x180A
+        NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
+        NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
+        );
+        pModelChar->setValue("BS-26A-072-005");
+
+        NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
+        );
+        pMfgChar->setValue("JBD BMS");
+
+        NimBLECharacteristic* pSerialChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ
+        );
+        pSerialChar->setValue("BS-26A-072-005");
+
+        NimBLECharacteristic* pFwChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ
+        );
+        pFwChar->setValue("V1.3");
+
+        NimBLECharacteristic* pHwChar = pDevInfo->createCharacteristic(
+            NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ
+        );
+        pHwChar->setValue("V1.0");
+
+        // Start Services
+        pServer->start();
+
+        // Configure Advertising for iOS CoreBluetooth (Strict <= 31 bytes per packet)
+        NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+
+        // Primary Advertisement Packet (25 bytes <= 31 bytes): Flags + Complete Name + 16-bit Service UUID
+        NimBLEAdvertisementData advData;
+        advData.setFlags(0x06); // General Discoverable + BR_EDR_NOT_SUPPORTED
+        advData.setName(BLE_DEVICE_NAME);
+        advData.setCompleteServices(NimBLEUUID((uint16_t)0xFF00));
+
+        // Scan Response Packet (24 bytes <= 31 bytes): 128-bit UUID + pure 6-byte MAC in Manufacturer Data
+        NimBLEAdvertisementData scanData;
+        scanData.setCompleteServices(NimBLEUUID("0000FF00-0000-1000-8000-00805F9B34FB"));
+        uint8_t mfgBytes[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+        scanData.setManufacturerData(std::string((char*)mfgBytes, 6));
+
+        pAdvertising->setAdvertisementData(advData);
+        pAdvertising->setScanResponseData(scanData);
+        pAdvertising->setMinInterval(32); // 20ms advertising interval for instant discovery
+        pAdvertising->setMaxInterval(64); // 40ms
+        pAdvertising->start();
+
+        // Initial state: Red LED indicates Advertising / Waiting for client
+        updateStatusLed();
+
+        Serial.println("[BLE] Advertising started successfully as 'BS-26A-072-005' with PIN 123456.");
+        Serial.println("[BLE] Ready for connection from XiaoxiangBMS, JBD BMS, or ESP32 Universal Monitor...");
+    }
 }
 
 // ============================================================================
@@ -770,6 +1796,28 @@ void setup() {
 // ============================================================================
 void loop() {
     unsigned long now = millis();
+
+    // Expire double reset window after 2.5 seconds of stable running
+    if (g_doubleResetPending && (now - g_bootTime > 2500)) {
+        g_doubleResetPending = false;
+        s_prefs.putBool("dr_flag", false);
+    }
+
+    // Hardware Button (GPIO 9 BOOT Button): Long press (> 1.5s) toggles BMS mode
+    static unsigned long s_btnPressStart = 0;
+    static bool s_btnWasPressed = false;
+    bool btnIsPressed = (digitalRead(BOOT_BUTTON_PIN) == LOW);
+    if (btnIsPressed && !s_btnWasPressed) {
+        s_btnWasPressed = true;
+        s_btnPressStart = now;
+    } else if (btnIsPressed && s_btnWasPressed) {
+        if (now - s_btnPressStart > 1500) {
+            Serial.println("\n[BUTTON] Long press detected on BOOT button (GPIO 9)! Toggling mode...");
+            toggleEmulatorMode();
+        }
+    } else if (!btnIsPressed && s_btnWasPressed) {
+        s_btnWasPressed = false;
+    }
 
     // High frequency physics & telemetry simulation (every 200ms)
     if (now - g_lastSimTime >= 200) {
@@ -876,6 +1924,17 @@ void loop() {
         }
     }
 
+    // In Daly mode, periodically push Modbus D2 Status, P81 cells, and legacy A5 frames (every 1000ms) when connected
+    static unsigned long s_lastDalyPush = 0;
+    if (g_proto == PROTO_DALY && g_deviceConnected && (now - s_lastDalyPush >= 1000)) {
+        s_lastDalyPush = now;
+        sendDalyModbusStatusD2(false);
+        delay(20);
+        sendDalyP81Cells();
+        delay(20);
+        sendAllDalyTelemetry();
+    }
+
     // Periodic telemetry log (every 2000ms)
     if (now - g_lastLogTime >= 2000) {
         g_lastLogTime = now;
@@ -888,7 +1947,8 @@ void loop() {
         const char* modeStr = (g_bms.current_10ma > 50) ? "CHARGING (+)" :
                               ((g_bms.current_10ma < -50) ? "DISCHARGING (-)" : "STANDBY (IDLE)");
 
-        Serial.printf("[STATUS] BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
+        Serial.printf("[STATUS] Proto: %s | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
+                      (g_proto == PROTO_DALY) ? "DALY" : "JBD",
                       g_deviceConnected ? "CONNECTED" : "ADVERTISING",
                       modeStr, packV, currA, powerW, g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
     }
@@ -896,7 +1956,21 @@ void loop() {
     // Interactive Serial Control
     if (Serial.available()) {
         char ch = Serial.read();
-        if (ch == '1' || ch == 'd' || ch == 'D') {
+        if (ch == 'm' || ch == 'M') {
+            toggleEmulatorMode();
+        } else if (ch == 't' || ch == 'T') {
+            Serial.printf(">>> Manual Telemetry Burst (proto=%s, connected=%d) <<<\n",
+                          (g_proto == PROTO_DALY) ? "DALY" : "JBD", g_deviceConnected);
+            if (g_proto == PROTO_DALY) {
+                sendDalyModbusStatusD2(false);
+                sendDalyP81Cells();
+                sendAllDalyTelemetry();
+            }
+        } else if (ch == 'j' || ch == 'J') {
+            setEmulatorMode(PROTO_JBD);
+        } else if (ch == 'y' || ch == 'Y') {
+            setEmulatorMode(PROTO_DALY);
+        } else if (ch == '1' || ch == 'd' || ch == 'D') {
             g_bms.mode = MODE_DISCHARGE;
             updateStatusLed();
             Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) <<<");
