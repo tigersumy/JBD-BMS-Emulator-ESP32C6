@@ -10,9 +10,9 @@
 
 A full-featured, standalone hardware-in-the-loop (HIL) battery management system (BMS) emulator powered by the **ESP32-C6** microcontroller (also compatible with **ESP32-S3**).
 
-The emulator implements a **Dual-Protocol Engine** and can dynamically emulate the two most popular smart BMS standards in the world:
-1. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS**
-2. **Daly Smart BMS (DL-xxxx series)**
+The emulator implements a **Dual-Protocol Engine** and dynamically emulates the two most popular smart BMS standards in the world:
+1. **Daly Smart BMS (DL-xxxx series)**
+2. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS**
 
 This project allows safe, rapid bench testing, debugging, and calibration of inverter gateways (Growatt, Deye, Datouboss, Sandisolar, Victron), Home Assistant / ESPHome setups, and official mobile apps without connecting to a physical, hazardous high-voltage battery pack.
 
@@ -22,8 +22,27 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 
 ## 🚀 Key Features
 
-### 1. Dual-Protocol Engine (JBD ↔ Daly)
-- **On-the-Fly Switching**:
+### 📱 Mobile App & Client Compatibility
+- **Smart BMS (Official Daly BMS App for iOS & Android)**:
+  - **100% native compatibility in Daly BMS mode (`DL-401804015491`)**.
+  - Complete 8-cell voltage display (3.275V–3.288V) with dynamic min/max highlights.
+  - Complete hardware & software identification: Firmware `24_231116_001T`, Hardware `DL-8S-200A`, SN `207JD160400278`, Production Date `20240516`, PID `NoPID`.
+  - Full Charge & Discharge MOS switch toggling and Active Balancer control directly from the app interface.
+- **JBD BMS (Official Jiabaida App for iOS & Android)**:
+  - **100% native compatibility in JBD BMS mode (`BS-26A-072-005`)**.
+  - Proprietary PIN authentication handshake `FF AA 15` (default password `123456`).
+  - Full access to "Parameters" and "About Battery" views (EEPROM read/write).
+- **Xiaoxiang BMS (iOS & Android)**:
+  - Real-time telemetry, cell voltage monitoring, and temperature display in JBD mode.
+- **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale Web Dashboard)**:
+  - Automatic detection of both Daly and JBD BMS protocols with real-time web telemetry over Tailscale.
+- **ESPHome / Home Assistant / Node-RED / Inverter Gateways**:
+  - Native integration with standard `daly_bms` and `jbd_bms` components.
+
+---
+
+### 🔄 Dual-Protocol Architecture (JBD ↔ Daly)
+- **Instant Mode Switching**:
   - **Hardware Double Reset**: Double-clicking the **RST** button on the ESP32-C6 board within 1.5 seconds toggles between JBD and Daly modes. Mode is persisted across reboots in NVS Flash.
   - **Interactive Serial CLI**: Enter `m` (toggle), `j` (JBD), or `y` (Daly) in the serial terminal (115200 baud).
   - **Bash Script**: Run `./switch_mode.sh daly` or `./switch_mode.sh jbd`.
@@ -32,33 +51,40 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 
 ---
 
-### 2. Daly Smart BMS Emulation (DL-401804015491)
-- **Device Name**: `DL-401804015491` | **MAC**: `A5:C2:3A:26:F2:D1`.
+### 🛡️ Daly Smart BMS Emulation (DL-401804015491)
+- **Device Name**: `DL-401804015491` | **Hardware MAC**: `A5:C2:3A:26:F2:D1`.
 - **Dual Communication Standards**:
-  1. **Modbus RTU over BLE (0xD2)**: Official **Smart BMS** mobile app support (iOS & Android).
-     - Full 8-cell voltage breakdown (3.275V–3.288V) with dynamic min/max highlights.
-     - NTC temperatures (T1, T2, T3) and power MOS temperature (28°C).
-     - Complete device identity: Firmware `24_231116_001T`, Hardware `DL-8S-200A`, SN `207JD160400278`, Production Date `20240516` (0x00CC), PID `NoPID` (0x00CE).
-     - Function 0x06 write control: Charge MOS (`0x00A5`), Discharge MOS (`0x00A6`), Active Balancer (`0x00A7`).
-  2. **UART-over-BLE (0xA5)**: 13-byte framed protocol for **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale)**, ESPHome, and inverter gateways.
-     - Full support for commands `0x90`–`0x98`, `0xD9`/`0xDA`.
-     - Multi-frame 0x95 cell streaming (3 sequential frames) with 40ms inter-frame pacing to prevent BLE buffer drops.
+  1. **Modbus RTU over BLE (`0xD2`)** — for official **Smart BMS** mobile app:
+     - Function 0x03 (Read Holding Registers): dynamic register slicing up to 80 registers.
+     - Registers `0x0000..0x001F`: cell voltages 1..32 in mV.
+     - Registers `0x0020..0x0027`: NTC temperatures 1..8 (+40°C offset).
+     - Registers `0x0028..0x0046`: pack voltage ($0.1\text{ V}$), current (+30000 offset), SOC, min/max V and T, average V, delta V, cycle count, power in Watts.
+     - Registers `0x0047..0x0056`: mirror single cell voltages block 1..16.
+     - Registers `0x0080..0x00A8`: configuration parameters and alarm thresholds.
+     - Registers `0x00A9..0x00CC` (35 registers = 70 bytes): device identification (SW `24_231116_001T`, HW `DL-8S-200A`, SN `207JD160400278`, password `123456`).
+     - Registers `0x00CC..0x00CD`: production date (`20240516`).
+     - Registers `0x00CE..0x00D0`: device PID string (`NoPID`).
+     - Function 0x06 (Write Single Register): Charge MOS (`0x00A5`), Discharge MOS (`0x00A6`), Active Balancer (`0x00A7`).
+  2. **UART-over-BLE (`0xA5`)** — 13-byte framed protocol for diagnostic probes and inverters:
+     - Commands `0x90`–`0x98`, `0xD9`/`0xDA`.
+     - Multi-frame 0x95 sequential cell streaming (3 sequential frames) with 40ms inter-frame pacing to prevent BLE buffer drops.
 
 ---
 
-### 3. JBD / Xiaoxiang BMS Emulation (BS-26A-072-005)
-- **Device Name**: `BS-26A-072-005` | **MAC**: `A5:C2:3A:26:F2:C2`.
-- **App Compatibility**: Official **JBD BMS** (iOS & Android) and **Xiaoxiang BMS**.
-- **Complete BLE GATT Profile**:
-  - Primary Service `0xFF00` (Notify: `0xFF01`, Write: `0xFF02`) and mirror service `0xFFF0`.
-  - **iOS CoreBluetooth Discovery Fix**: Injects hardware MAC into `Manufacturer Data` of the Scan Response packet for instant discovery on iPhone.
-  - **Authentication**: Supports `FF AA 15` handshake and default PIN `123456`.
-  - **Full EEPROM Map**: Registers `0x10`..`0x3F`, `0xAA` error logs, and direct AFE RAM memory reading (`0xFA`, offset `0x58`) for Android.
-  - **20-byte ATT MTU Chunking**: Smooth 20-byte packet streaming with 25ms delay for 100% stability across Android (MTU 23) and iOS (MTU 512).
+### ⚡ JBD / Xiaoxiang BMS Emulation (BS-26A-072-005)
+- **Device Name**: `BS-26A-072-005` | **Hardware MAC**: `A5:C2:3A:26:F2:C2`.
+- **GATT Profile**: Primary Service `0xFF00` (Notify: `0xFF01`, Write: `0xFF02`) and mirror service `0xFFF0`.
+- **Apple iOS CoreBluetooth Compatibility**:
+  - Injects hardware MAC into `Manufacturer Data` of the Scan Response packet for instant discovery on iPhone.
+  - Open Pairing security mode with application-level PIN handshake (`123456`) without SMP bonding conflicts.
+- **Memory & Registers**:
+  - Full EEPROM map (`0x10`..`0x3F`, `0xAA` error logs).
+  - Direct AFE RAM memory reading (`0xFA`, offset `0x58` — 8 cell voltages in mV) for Android JBD App.
+  - 20-byte ATT MTU chunking with 25ms delay for 100% stability across Android (MTU 23) and iOS (MTU 512).
 
 ---
 
-### 4. 8S LiFePO4 Battery Physics Simulation (24V)
+### 🔋 8S LiFePO4 Battery Physics Simulation (24V)
 - **Dynamic Cell Voltage Breathing**: Cell voltages continuously oscillate in the $3.275\text{–}3.288\text{ V}$ range (3–12 mV delta) using sine-wave variations and pseudorandom micro-jitter.
 - **Load Modes**:
   - **Discharge**: $-17.00\text{ A}$, pack voltage $\sim 26.24\text{ V}$, power draw $\sim 445\text{ W}$.
@@ -69,7 +95,7 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 
 ---
 
-### 5. WS2812B RGB Status LED (GPIO 8)
+### 🎨 WS2812B RGB Status LED (GPIO 8)
 - 🔴 **Red**: Advertising / Waiting for connection.
 - 🟠 **Orange**: Active Discharge (-17.00 A).
 - 🩵 **Cyan**: Active Charge (+17.00 A).
@@ -139,7 +165,7 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 
 ## 📱 Verified Client Compatibility
 
-1. **JBD BMS / Xiaoxiang App** (iOS & Android) — Full telemetry, EEPROM, and cell monitoring in JBD mode (`BS-26A-072-005`).
-2. **Smart BMS App** (iOS & Android) — Official Daly app with full 8 cells, NTCs, and FET switch controls in Daly mode (`DL-401804015491`).
+1. **Smart BMS App** (iOS & Android) — Official Daly app with full 8 cells, NTCs, and FET switch controls in Daly mode (`DL-401804015491`).
+2. **JBD BMS / Xiaoxiang App** (iOS & Android) — Full telemetry, EEPROM, and cell monitoring in JBD mode (`BS-26A-072-005`).
 3. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe via Tailscale) — Seamless auto-detection and telemetry streaming for both JBD and Daly.
 4. **ESPHome / Home Assistant** — Compatible via standard `daly_bms` and `jbd_bms` components.
