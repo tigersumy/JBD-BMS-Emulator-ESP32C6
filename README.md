@@ -1,9 +1,10 @@
 # 🔋 ESP32-C6 Dual BMS BLE Emulator: JBD & Daly Smart BMS
 
 <p align="center">
-  <a href="README.md"><b>English</b></a> |
-  <a href="README_UA.md"><b>Українська</b></a> |
-  <a href="PROJECT_CAPABILITIES.md"><b>📋 Complete Capabilities Spec (MD)</b></a>
+  <a href="README.md"><b>English README</b></a> |
+  <a href="README_UA.md"><b>Українська README</b></a> |
+  <a href="PROJECT_CAPABILITIES.md"><b>📋 Capabilities Spec (EN)</b></a> |
+  <a href="PROJECT_CAPABILITIES_UA.md"><b>📋 Опис можливостей (UA)</b></a>
 </p>
 
 ---
@@ -133,8 +134,9 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 .
 ├── README.md                      # English documentation
 ├── README_UA.md                   # Ukrainian documentation
-├── PROJECT_CAPABILITIES.md        # Detailed capabilities & protocol reference
-├── Daly.MD                        # Daly Modbus & BLE notes
+├── PROJECT_CAPABILITIES.md        # Technical capabilities specification (English)
+├── PROJECT_CAPABILITIES_UA.md     # Технічний опис можливостей проєкту (Українська)
+├── Daly.MD                        # Daly Modbus register reference & specification
 ├── JBD_PROTOCOL_SPEC.md           # JBD binary protocol specification
 ├── JBD_REGISTER_MAP.md            # JBD EEPROM register map
 ├── 4s standard LiFePO4 Alf-20210608.fig   # 4S (12V) LiFePO4 configuration profile

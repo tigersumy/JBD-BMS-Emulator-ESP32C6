@@ -1,20 +1,27 @@
-# 🔋 Можливості проєкту: JBD & Daly BMS BLE Emulator (ESP32-C6 / ESP32-S3)
+# 🔋 Project Capabilities: JBD & Daly BMS BLE Emulator (ESP32-C6 / ESP32-S3)
+
+<p align="center">
+  <a href="PROJECT_CAPABILITIES.md"><b>English Spec</b></a> |
+  <a href="PROJECT_CAPABILITIES_UA.md"><b>Українська версія</b></a> |
+  <a href="README.md"><b>English README</b></a> |
+  <a href="README_UA.md"><b>Українська README</b></a>
+</p>
 
 ---
 
-## 📌 1. Загальний огляд проєкту
+## 📌 1. Project Overview
 
-**JBD & Daly BMS Emulator** — це повнофункціональний, автономний апаратно-програмний емулятор акумуляторних систем керування (BMS) на базі мікроконтролера **ESP32-C6** (з підтримкою **ESP32-S3**). 
+The **JBD & Daly BMS Emulator** is a standalone, full-featured hardware-in-the-loop (HIL) battery management system (BMS) emulator powered by the **ESP32-C6** RISC-V microcontroller (also fully compatible with **ESP32-S3**).
 
-Емулятор реалізує **подвійний протокольний стек** (Dual-Protocol Engine) і здатний на льоту повністю імітувати роботу двох найпопулярніших у світі стандартів розумних BMS:
+The emulator implements a **Dual-Protocol Engine** capable of dynamically switching between and accurately mimicking the two most popular smart BMS standards in the renewable energy and light EV markets:
 1. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS**
-2. **Daly Smart BMS (DL-xxxx)**
+2. **Daly Smart BMS (DL-xxxx series)**
 
-Проєкт розроблено для швидкого тестування, калібрування діагностичних шлюзів (ESP32 Universal Monitor / Tailscale Probe), інверторів (Growatt, Deye, Datouboss, Sandisolar, Victron), систем автоматизації Home Assistant / ESPHome та перевірки офіційних мобільних додатків без необхідності підключення до небезпечної високовольтної акумуляторної батареї.
+This project was engineered for rapid bench testing, protocol debugging, and calibration of diagnostic gateways (such as the ESP32 Universal Monitor / Tailscale Probe), solar hybrid inverters (Growatt, Deye, Datouboss, Sandisolar, Victron), Home Assistant / ESPHome automations, and official mobile apps without connecting to hazardous, high-voltage physical battery packs.
 
 ---
 
-## ⚡ 2. Архітектура та ключові особливості
+## ⚡ 2. System Architecture & Key Features
 
 ```mermaid
 flowchart TD
@@ -26,12 +33,12 @@ flowchart TD
         BLE["BLE 5.0 Radio (NimBLE)"]
     end
 
-    subgraph Modes ["Режими емуляції (Dual-Protocol)"]
-        JBD["Режим JBD / Xiaoxiang\n(MAC: A5:C2:3A:26:F2:C2)"]
-        DALY["Режим Daly Smart BMS\n(MAC: A5:C2:3A:26:F2:D1)"]
+    subgraph Modes ["Dual-Protocol Emulation Modes"]
+        JBD["JBD / Xiaoxiang Mode\n(MAC: A5:C2:3A:26:F2:C2)"]
+        DALY["Daly Smart BMS Mode\n(MAC: A5:C2:3A:26:F2:D1)"]
     end
 
-    subgraph Clients ["Підтримувані клієнти"]
+    subgraph Clients ["Supported Client Ecosystem"]
         AppJBD["JBD BMS / Xiaoxiang App\n(iOS / Android)"]
         AppDaly["Smart BMS App (Daly)\n(iOS / Android)"]
         Probe["Universal BMS Monitor\n(ESP32-S3 Tailscale Probe)"]
@@ -49,205 +56,205 @@ flowchart TD
 
 ---
 
-## 🔄 3. Перемикання режимів на льоту (JBD ↔ Daly)
+## 🔄 3. On-The-Fly Mode Switching (JBD ↔ Daly)
 
-Перемикання між протоколами JBD та Daly реалізовано трьома зручними способами:
+Switching between JBD and Daly protocols is supported via three methods:
 
-1. **Апаратний Double Reset (подвійний клік кнопки RST)**:
-   - Подвійне натискання апаратної кнопки **RST / RESET** на платі ESP32-C6 з інтервалом менше 1.5 секунди миттєво перемикає активний протокол.
-   - Поточний режим зберігається в енергонезалежній пам'яті **NVS (Non-Volatile Storage)** і автоматично відновлюється після вимкнення живлення.
-2. **Інтерактивні Serial-команди (USB-CDC 115200 baud)**:
-   - `m` або `M` — перемкнути режим (Toggle JBD / DALY).
-   - `j` або `J` — примусово увімкнути режим JBD BMS.
-   - `y` або `Y` — примусово увімкнути режим Daly BMS.
-3. **Автоматизований баш-скрипт (`switch_mode.sh`)**:
-   - Відправляє команди в порт `/dev/cu.usbmodem*` з командного рядка: `./switch_mode.sh daly` або `./switch_mode.sh jbd`.
+1. **Hardware Double Reset (RST Button Double-Click)**:
+   - Double-clicking the physical **RST / RESET** button on the ESP32-C6 board within 1.5 seconds instantly toggles the active protocol.
+   - The selected protocol mode is persisted in **NVS (Non-Volatile Storage)** and automatically restored across power cycles.
+2. **Interactive Serial Commands (USB-CDC 115200 baud)**:
+   - `m` or `M` — Toggle protocol mode (JBD $\leftrightarrow$ DALY).
+   - `j` or `J` — Force **JBD BMS** mode.
+   - `y` or `Y` — Force **DALY BMS** mode.
+3. **Automated Bash Script (`switch_mode.sh`)**:
+   - Send mode commands directly to the serial port from a terminal: `./switch_mode.sh daly` or `./switch_mode.sh jbd`.
 
-При зміні режиму мікроконтролер автоматично змінює:
-- Профіль реклами BLE (Advertised Name, Service UUIDs, Manufacturer Data).
-- Апаратну MAC-адресу BLE.
-- Стек обробників протоколу GATT.
-- Профіль ідентифікації Device Information Service (0x180A).
+When the mode changes, the firmware dynamically reconfigures:
+- BLE Advertising profile (Advertised Device Name, Service UUIDs, Manufacturer Data).
+- Hardware BLE MAC address.
+- GATT service handlers and characteristic callbacks.
+- Device Information Service (0x180A) identification fields.
 
 ---
 
-## 🔋 4. Фізичний рушій та конфігурації акумуляторів (4S, 8S, 16S ... 32S)
+## 🔋 4. Battery Physics Engine & Multi-Series Configurations (4S, 8S, 16S ... 32S)
 
-Емулятор оснащено динамічною масштабованою математичною моделлю акумуляторної батареї з підтримкою різних типів з'єднання та хімії:
+The emulator features a dynamic mathematical model of a multi-cell battery pack with broad series configuration and electrochemistry support:
 
-### А. Підтримувані конфігурації послідовного з'єднання (Cell Count Configurations):
+### A. Supported Series Configurations (Cell Count):
 1. **4S (12V / 12.8V LiFePO4)**:
-   - **Робочий діапазон напруг**: $10.0\text{ В} \dots 14.6\text{ В}$ (номінальна напруга $12.8\text{ В}$).
-   - **Застосування**: Автомобільні бортові мережі, кемпери, човни, переносні зарядні станції, 12-вольтові ДБЖ.
-   - **Готовий калібрувальний файл у репозиторії**: `4s standard LiFePO4 Alf-20210608.fig`.
-   - **Програмна ідентифікація**: версія Daly `12_231116_001T`, JBD профіль `JBD-SP04S020` / `DP04S007`.
+   - **Operating Voltage Range**: $10.0\text{ V} \dots 14.6\text{ V}$ (nominal $12.8\text{ V}$).
+   - **Target Applications**: 12V automotive networks, camper vans, marine/RV systems, portable power stations, and 12V telecom UPS.
+   - **Included PC Calibration Profile**: `4s standard LiFePO4 Alf-20210608.fig`.
+   - **Device Identity**: Daly firmware `12_231116_001T`, JBD profile `JBD-SP04S020` / `DP04S007`.
 
-2. **8S (24V / 25.6V LiFePO4) — Базовий профіль за замовчуванням (Default)**:
-   - **Робочий діапазон напруг**: $20.0\text{ В} \dots 29.2\text{ В}$ (номінал $25.6\text{ В}$, робоча точка під навантаженням $17\text{ А}$ $\sim 26.24\text{ В}$, активна потужність $\sim 445\text{ Вт}$).
-   - **Застосування**: Домашні резервні системи живлення (UPS), 24V сонячні станції та телеком-обладнання.
-   - **Готовий калібрувальний файл у репозиторії**: `8s standard LiFePO4 Alf-20210608.fig`.
-   - **Програмна ідентифікація**: Daly `DL-8S-200A` (`24_231116_001T`), JBD `DB24SF01 V1.0` / `BS-26A-072-005` (8S 200A).
+2. **8S (24V / 25.6V LiFePO4) — Default Profile**:
+   - **Operating Voltage Range**: $20.0\text{ V} \dots 29.2\text{ V}$ (nominal $25.6\text{ V}$, loaded operating point at $17\text{ A}$ $\sim 26.24\text{ V}$, output power $\sim 445\text{ W}$).
+   - **Target Applications**: 24V home backup power / UPS, residential solar ESS, and light EV battery packs.
+   - **Included PC Calibration Profile**: `8s standard LiFePO4 Alf-20210608.fig`.
+   - **Device Identity**: Daly `DL-8S-200A` (`24_231116_001T`), JBD `DB24SF01 V1.0` / `BS-26A-072-005` (8S 200A).
 
 3. **16S (48V / 51.2V LiFePO4)**:
-   - **Робочий діапазон напруг**: $40.0\text{ В} \dots 58.4\text{ В}$ (номінальна напруга $51.2\text{ В}$).
-   - **Застосування**: Індустріальний стандарт для житлових та комерційних 48V гібридних сонячних інверторів (Deye, Growatt, Victron, Must, Axioma, Luxpower, Sermatec) та серверних акумуляторних модулів (Server Rack Batteries).
-   - **Готовий калібрувальний файл у репозиторії**: `16s standard LiFePO4 Alf-20210608.fig`.
+   - **Operating Voltage Range**: $40.0\text{ В} \dots 58.4\text{ В}$ (nominal $51.2\text{ В}$).
+   - **Target Applications**: Standard for residential and commercial 48V hybrid solar inverters (Deye, Growatt, Victron, Must, Axioma, Luxpower, Sermatec) and server-rack lithium battery packs.
+   - **Included PC Calibration Profile**: `16s standard LiFePO4 Alf-20210608.fig`.
 
-4. **Універсальне динамічне масштабування (Universal 3S–32S)**:
-   - Емулятор підтримує довільну кількість комірок від **3S до 32S** без необхідності перепрошивки:
-     - У протоколі **JBD**: регістр EEPROM `0x2F` (Cell Count) дозволяє задавати значення $3 \dots 32$ на льоту.
-     - У протоколі **Daly Modbus**: регістри `0x0031` (статус кількості комірок) та `0x0083` (конфігураційний регістр кількості комірок) приймають значення $3 \dots 32$. Напруги комірок транслюються в діапазоні холдинг-регістрів `0x0000..0x001F` (1..32 комірки).
-     - У протоколі **Daly UART**: команди `0x50` та `0xD6` налаштовують кількість комірок, а фрейми телеметрії `0x95` автоматично формують динамічну кількість 3-коміркових чанків.
-   - Загальна напруга акумуляторного блоку розраховується сумуванням активних комірок:
+4. **Universal Dynamic Scaling (3S to 32S)**:
+   - The emulator supports setting arbitrary cell counts from **3S up to 32S** at runtime:
+     - In **JBD protocol**: EEPROM register `0x2F` (Cell Count) accepts values $3 \dots 32$ dynamically.
+     - In **Daly Modbus protocol**: register `0x0031` (Cell count status) and register `0x0083` (Cell count configuration) accept $3 \dots 32$. Cell voltages are served across holding registers `0x0000..0x001F` (Cells 1..32).
+     - In **Daly UART protocol**: commands `0x50` and `0xD6` configure cell count, and telemetry frames `0x95` automatically scale the 3-cell chunk sequence.
+   - Total pack voltage is calculated dynamically:
      $$U_{pack} = \sum_{i=1}^{N} U_{cell\_i}$$
 
 ---
 
-### Б. Підтримувані типи електрохімії акумуляторів:
-- **LiFePO4 (LFP)**: номінальна напруга $3.2\text{ В}$ (робочий діапазон $2.5\text{ В} \dots 3.65\text{ В}$). Найпоширеніші збірки: 4S (12.8V), 8S (25.6V), 16S (51.2V).
-- **Li-ion / NMC (Ternary)**: номінальна напруга $3.6\text{–}3.7\text{ В}$ (робочий діапазон $2.8\text{ В} \dots 4.2\text{ В}$). Поширені збірки: 3S (11.1V), 7S (25.9V), 10S (36V), 13S/14S (48V), 20S (72V).
-- **LTO (Lithium Titanate)**: номінальна напруга $2.3\text{–}2.4\text{ В}$ (робочий діапазон $1.5\text{ В} \dots 2.8\text{ В}$). Поширені збірки: 5S/6S (12V), 10S/11S (24V), 20S/22S (48V).
+### B. Supported Electrochemistry Chemistries:
+- **LiFePO4 (LFP)**: nominal $3.2\text{ V}$ (operating range $2.5\text{ V} \dots 3.65\text{ V}$). Standard builds: 4S (12.8V), 8S (25.6V), 16S (51.2V).
+- **Li-ion / NMC (Ternary)**: nominal $3.6\text{–}3.7\text{ V}$ (operating range $2.8\text{ V} \dots 4.2\text{ V}$). Standard builds: 3S (11.1V), 7S (25.9V), 10S (36V), 13S/14S (48V), 20S (72V).
+- **LTO (Lithium Titanate)**: nominal $2.3\text{–}2.4\text{ V}$ (operating range $1.5\text{ В} \dots 2.8\text{ В}$). Standard builds: 5S/6S (12V), 10S/11S (24V), 20S/22S (48V).
 
 ---
 
-### В. Динамічна поведінка фізичного рушія:
-* **Живе «дихання» комірок (Dynamic Cell Breathing)**:
-  - Напруга кожної окремої комірки безперервно коливається за індивідуальним синусоїдальним законом із фазовим зміщенням та псевдовипадковим мікро-шумом ($\pm 2\text{–}5\text{ мВ}$) навколо робочої точки ($3.28\text{ В}$ під розрядом, $3.45\text{ В}$ при заряді, $3.32\text{ В}$ у спокої).
-  - Динамічно розраховується дельта розбалансу комірок ($3\text{–}12\text{ мВ}$) та визначаються індекси комірок з мінімальною і максимальною напругою.
-* **Режими навантаження та струмові криві**:
-  - **Розряд (Discharge Mode)**: струм $-17.00\text{ А}$ (з реалістичним jitter $\pm 0.3\text{ А}$). Для базової збірки 8S це відповідає потужності розряду $\sim 445\text{ Вт}$.
-  - **Заряд (Charge Mode)**: номінальний струм $+25.00\text{ А}$ з пульсаціями зарядного пристрою.
-  - **Очікування (Standby Mode)**: струм $0.00\text{ А}$, потужність $0\text{ Вт}$.
-* **Підрахунок ампер-годин (Coulomb Counting)**:
-  - Безперервний інтеграл струму в часі ($I \times \Delta t$) перераховує залишкову ємність у режимі реального часу, з динамічним оновленням SOC (%).
-* **Теплова модель (NTC Sensors)**:
-  - NTC 1 (Датчик батареї 1): $\sim 26.0^\circ\text{C}$.
-  - NTC 2 (Датчик батареї 2): $\sim 25.0^\circ\text{C}$.
-  - NTC 3 / MOS Temp (Температура силових ключів): нагрівається під навантаженням до $28.0\dots 30.0^\circ\text{C}$.
-* **Керування силовими ключами (FET Switches)**:
-  - Підтримка незалежного розмикання/замикання **Charge MOS** та **Discharge MOS**.
-  - При вимкненні Discharge FET струм миттєво падає до $0.00\text{ А}$, потужність стає $0\text{ Вт}$, а світлодіод переходить у режим очікування.
+### C. Dynamic Physics & Load Emulation:
+* **Dynamic Cell Breathing**:
+  - Cell voltages oscillate smoothly using individual phase-shifted sine-wave variations and pseudorandom micro-jitter ($\pm 2\text{–}5\text{ mV}$) around the active operating point ($3.28\text{ V}$ under discharge, $3.45\text{ V}$ during charge, $3.32\text{ V}$ at rest).
+  - Real-time cell delta calculation ($3\text{–}12\text{ mV}$) with dynamic min/max cell index identification.
+* **Load Modes & Current Curves**:
+  - **Discharge Mode**: $-17.00\text{ A}$ nominal (with realistic load jitter $\pm 0.3\text{ A}$). On an 8S pack, this yields $\sim 26.24\text{ V}$ and $\sim 445\text{ W}$ continuous load.
+  - **Charge Mode**: $+25.00\text{ A}$ nominal with dynamic charger ripple simulation.
+  - **Standby Mode**: $0.00\text{ A}$, power draw $0\text{ W}$.
+* **Coulomb Counting**:
+  - Real-time current integration ($I \times \Delta t$) updating remaining Ah and battery SOC (%) dynamically.
+* **Thermal Model (NTC Sensors)**:
+  - NTC 1 (Battery Sensor 1): $\sim 26.0^\circ\text{C}$.
+  - NTC 2 (Battery Sensor 2): $\sim 25.0^\circ\text{C}$.
+  - NTC 3 / MOS Temp: warms up under heavy current to $28.0\dots 30.0^\circ\text{C}$.
+* **FET Control Responsiveness**:
+  - Independent switching of **Charge MOS** and **Discharge MOS**.
+  - Toggling off the Discharge FET instantly drops load current to $0.00\text{ A}$ and power to $0\text{ W}$.
 
 ---
 
-## 📱 5. Можливості режиму JBD / Xiaoxiang BMS
+## 📱 5. JBD / Xiaoxiang BMS Emulation Capabilities
 
-| Параметр | Значення / Реалізація |
+| Feature / Parameter | Implementation Details |
 | :--- | :--- |
-| **Ім'я BLE** | `BS-26A-072-005` |
-| **MAC-адреса BLE** | `A5:C2:3A:26:F2:C2` |
-| **Основний сервіс** | Service `0xFF00` (Write: `0xFF02`, Notify: `0xFF01`) |
-| **Дзеркальний сервіс** | Service `0xFFF0` (Write: `0xFFF2`, Notify: `0xFFF1`) |
-| **MTU Chunking** | Автоматична нарізка пакетів по $\le 20$ байт із затримкою $25\text{ мс}$ (ідеальна сумісність з Android MTU=23 та iOS MTU=512) |
-| **iOS CoreBluetooth Fix**| Вкладання MAC-адреси в `Manufacturer Data` Scan Response для миттєвого пошуку в iOS додатку |
-| **Авторизація / PIN** | Команда `FF AA 15` та регістр `0x06` (підтримка PIN `123456`) |
-| **Службові протоколи** | Sinowealth `3B 3C`, AT-команда `AT^VERSION?` $\rightarrow$ `DB24SF01 V1.0` |
-| **EEPROM регістри** | Повна карта регістрів `0x10`..`0x3F`, `0xAA` (ємність, цикли, пороги захисту) |
-| **AFE RAM (`0xFA`)** | Читання прямої пам'яті AFE (зсув `0x58`: напруги 8 комірок) для Android |
-| **Запис конфігурації** | Калібрування номінальної (`0x10`) та циклічної (`0x11`) ємності, струму (`0xE0`), кількості комірок (`0x2F`) |
+| **BLE Advertised Name** | `BS-26A-072-005` |
+| **BLE MAC Address** | `A5:C2:3A:26:F2:C2` |
+| **Primary Service** | Service `0xFF00` (Write: `0xFF02`, Notify: `0xFF01`) |
+| **Mirror Service** | Service `0xFFF0` (Write: `0xFFF2`, Notify: `0xFFF1`) |
+| **MTU Chunking** | Automated 20-byte packet slicing with $25\text{ ms}$ pacing (ensures compatibility with Android MTU 23 and iOS MTU 512) |
+| **iOS CoreBluetooth Fix**| Hardware MAC injected into Scan Response `Manufacturer Data` for instant discovery on iPhone |
+| **PIN Handshake** | Command `FF AA 15` and register `0x06` (default PIN `123456`) |
+| **Service Protocols** | Sinowealth `3B 3C`, AT command `AT^VERSION?` $\rightarrow$ `DB24SF01 V1.0` |
+| **EEPROM Registers** | Full register map `0x10`..`0x3F`, `0xAA` (capacities, cycle counts, protection trip points) |
+| **AFE RAM (`0xFA`)** | Direct AFE RAM memory reading (offset `0x58`: individual cell voltages) for official Android app |
+| **Configuration Writes**| Runtime calibration of nominal capacity (`0x10`), cycle capacity (`0x11`), current calibration (`0xE0`), cell count (`0x2F`) |
 
 ---
 
-## 🛡️ 6. Можливості режиму Daly Smart BMS
+## 🛡️ 6. Daly Smart BMS Emulation Capabilities
 
-Режим Daly реалізує **гібридний подвійний протокол**:
+The Daly emulation mode implements a **Hybrid Dual Protocol**:
 
-### А. Протокол Modbus RTU over BLE (`0xD2`)
-Призначений для оригінального мобільного додатку **Smart BMS** (iOS / Android):
+### A. Modbus RTU over BLE Protocol (`0xD2`)
+Engineered for the official **Smart BMS** mobile app (iOS / Android):
 
-* **Функція 0x03 (Read Holding Registers)**:
-  * **Регістри `0x0000..0x001F`**: Напруги комірок 1..32 (мВ).
-  * **Регістри `0x0020..0x0027`**: Температури NTC 1..8 (зі зміщенням $+40^\circ\text{C}$).
-  * **Регістри `0x0028..0x0046`**: Повна телеметрія пакета (загальна напруга $0.1\text{ В}$, струм зі зміщенням $30000$, SOC, екстремуми напруг і температур, дельта, циклічність, статус ключів, потужність у Вт).
-  * **Регістри `0x0047..0x0056`**: Дзеркальний блок окремих комірок (Single Cell Voltages 1..16).
-  * **Регістри `0x0080..0x00A8`**: Блок системних налаштувань (номінальна ємність, пороги захисту за напругою, струмом і температурою).
-  * **Регістри `0x00A9..0x00CB` (Ідентифікація, 35 регістрів = 70 байт)**:
-    * Версія ПЗ: `24_231116_001T` (для 8S 24V) / `12_231116_001T`
-    * Версія «заліза»: `DL-8S-200A`
-    * Серійний номер (SN): `207JD160400278`
-    * Пароль за замовчуванням: `123456`
-  * **Регістри `0x00CC..0x00CD`**: Дата виробництва (`20240516`).
-  * **Регістри `0x00CE..0x00D0`**: PID пристрою (`NoPID`).
-* **Функція 0x06 (Write Single Register)**:
-  * Керування Charge MOS: `0x00A5` / `0x00DA`
-  * Керування Discharge MOS: `0x00A6` / `0x00D9`
-  * Керування балансиром: `0x00A7` / `0x00CF`
-  * Зміна номінальної ємності: `0x0080`
-  * Зміна кількості комірок: `0x0083`
+* **Function 0x03 (Read Holding Registers)**:
+  * **Registers `0x0000..0x001F`**: Individual cell voltages 1..32 in mV.
+  * **Registers `0x0020..0x0027`**: NTC temperatures 1..8 with $+40^\circ\text{C}$ offset.
+  * **Registers `0x0028..0x0046`**: Complete pack telemetry (total voltage in $0.1\text{ V}$, current with $30000$ offset, SOC, voltage/temp extremes, delta, cycle count, MOS status, power in Watts).
+  * **Registers `0x0047..0x0056`**: Mirrored single cell voltages block 1..16.
+  * **Registers `0x0080..0x00A8`**: System configuration parameters (rated capacity, overvoltage, undervoltage, and temperature trip points).
+  * **Registers `0x00A9..0x00CB` (Identification Block, 35 registers = 70 bytes)**:
+    * Software Version: `24_231116_001T` (for 8S 24V) / `12_231116_001T`
+    * Hardware Version: `DL-8S-200A`
+    * Serial Number (SN): `207JD160400278`
+    * Default Password: `123456`
+  * **Registers `0x00CC..0x00CD`**: Production Date (`20240516`).
+  * **Registers `0x00CE..0x00D0`**: Device PID (`NoPID`).
+* **Function 0x06 (Write Single Register)**:
+  * Charge MOS toggle: `0x00A5` / `0x00DA`
+  * Discharge MOS toggle: `0x00A6` / `0x00D9`
+  * Active Balancer toggle: `0x00A7` / `0x00CF`
+  * Rated Capacity setting: `0x0080`
+  * Cell Count setting: `0x0083`
 
-### Б. Фреймовий протокол UART-over-BLE (`0xA5`)
-Призначений для **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale)**, драйверів ESPHome, Node-RED та інверторів:
+### B. Framed UART-over-BLE Protocol (`0xA5`)
+Engineered for the **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale)**, ESPHome, Node-RED, and inverter controllers:
 
-* 13-байтні фрейми фіксованої довжини з контрольною сумою `sum & 0xFF`:
-  * `0x90` — Загальна напруга, струм (offset 30000), SOC.
-  * `0x91` — Екстремуми напруг: Max Cell mV, Min Cell mV, номери комірок.
-  * `0x92` — Екстремуми температур: Max/Min Temp (offset 40).
-  * `0x93` — Статус Charge/Discharge MOS, BMS Life, залишкова ємність (А·год).
-  * `0x94` — Кількість комірок ($8$), кількість NTC ($3$), лічильник циклів.
-  * `0x95` — Покомірковий моніторинг: 3 послідовних фрейми (по 3 комірки у фреймі) з міжкадровим інтервалом $40\text{ мс}$ (без затирання BLE буфера).
-  * `0x96` — Індивідуальні покази датчиків NTC1..NTC3.
-  * `0x97` — Бітова маска активного балансування.
-  * `0x98` — Повна 8-байтна бітова маска помилок та аварій (DI status).
-  * `0xD9` / `0xDA` — Команди перемикання ключів розряду/заряду.
+* 13-byte fixed frames with checksum byte `sum & 0xFF`:
+  * `0x90` — Pack voltage, current (offset 30000), SOC.
+  * `0x91` — Voltage extremes: Max Cell mV, Min Cell mV, cell indices.
+  * `0x92` — Temperature extremes: Max/Min Temp (offset 40).
+  * `0x93` — Charge/Discharge MOS status, BMS Life counter, remaining capacity (Ah).
+  * `0x94` — Cell count ($8$), NTC count ($3$), cycle counter.
+  * `0x95` — Sequential cell voltages: dynamic sequential frames (3 cells per frame) with $30\text{–}40\text{ ms}$ pacing to prevent BLE buffer drops.
+  * `0x96` — Individual NTC1..NTC3 sensor temperatures.
+  * `0x97` — Active balancing bitmask.
+  * `0x98` — 8-byte alarm and protection status bitmask (DI status).
+  * `0xD9` / `0xDA` — Remote Charge/Discharge FET control commands.
 
 ---
 
-## 🎨 7. Апаратна індикація (WS2812B RGB LED @ GPIO 8)
+## 🎨 7. Hardware Visual Indication (WS2812B RGB LED @ GPIO 8)
 
-ESP32-C6 SuperMini оснащено адресним світлодіодом WS2812B, який відображає поточний стан системи в реальному часі:
+The onboard WS2812B addressable LED indicates real-time operational states:
 
-| Колір світлодіода | Стан емулятора |
+| LED Color | Emulator Status |
 | :--- | :--- |
-| 🔴 **Червоний** | Режим очікування клієнта (BLE Advertising) |
-| 🟠 **Помаранчевий** | Активний розряд батареї під навантаженням (Discharge, $-17\text{ А}$) |
-| 🩵 **Блакитний (Cyan)** | Активний заряд батареї (Charge, $+17\text{ А}$) |
-| 🟢 **Зелений** | Спокій / Standby ($0\text{ А}$, ключі замкнено) |
-| ⚪ **Білий** | Повний заряд акумулятора ($100\%\text{ SOC}$) |
-| 🟡 **Жовтий** | Спрацювання захисту або симуляція аварії |
+| 🔴 **Red** | Standby / BLE Advertising (waiting for connection) |
+| 🟠 **Orange** | Active Discharge under load (Discharge, $-17.00\text{ A}$) |
+| 🩵 **Cyan** | Active Battery Charge (Charge, $+25.00\text{ A}$) |
+| 🟢 **Green** | Standby / Idle ($0.00\text{ A}$, FETs closed) |
+| ⚪ **White** | Fully Charged ($100\%\text{ SOC}$) |
+| 🟡 **Yellow** | Protection / Alarm triggered |
 
 ---
 
-## 💻 8. Команди Serial CLI (USB 115200 baud)
+## 💻 8. Serial CLI Command Reference (USB 115200 baud)
 
-Під час підключення до плати через будь-який монітор порту доступне інтерактивне керування:
+Interactive control is available via any serial terminal connected to the board:
 
-* `m` або `M` — Перемкнути протокол (**JBD** $\leftrightarrow$ **DALY**).
-* `j` або `J` — Примусово встановити режим **JBD BMS**.
-* `y` або `Y` — Примусово встановити режим **DALY BMS**.
-* `1` або `d` — Увімкнути режим **Розряду** (Discharge, $-17.00\text{ А}$).
-* `2` або `c` — Увімкнути режим **Заряду** (Charge, $+17.00\text{ А}$).
-* `0` або `s` — Увімкнути режим **Спокою** (Standby, $0.00\text{ А}$).
-* `b` або `B` — Увімкнути/вимкнути симуляцію **активного балансування**.
-* `f` або `F` — Увімкнути/вимкнути тумблери **Charge/Discharge FET**.
-* `+` / `-` — Збільшити / зменшити рівень заряду SOC на $\pm 5\%$.
-* `t` або `T` — Надіслати примусовий залп повної телеметрії в активний канал BLE.
-* `?` або `h` — Вивести довідку по доступних командах.
+* `m` or `M` — Toggle protocol mode (**JBD** $\leftrightarrow$ **DALY**).
+* `j` or `J` — Force **JBD BMS** mode.
+* `y` or `Y` — Force **DALY BMS** mode.
+* `1` or `d` — Enable **Discharge** mode ($-17.00\text{ A}$).
+* `2` or `c` — Enable **Charge** mode ($+25.00\text{ A}$).
+* `0` or `s` — Enable **Standby** mode ($0.00\text{ A}$).
+* `b` or `B` — Toggle **Active Balancing** simulation.
+* `f` or `F` — Toggle **Charge/Discharge FET** switches.
+* `+` / `-` — Increase / decrease SOC by $\pm 5\%$.
+* `t` or `T` — Trigger immediate burst of full telemetry over BLE.
+* `?` or `h` — Display command help menu.
 
 ---
 
-## 🌐 9. Перевірена сумісність з клієнтами
+## 🌐 9. Verified Client Compatibility
 
-| Клієнт / Додаток | Підтримуваний режим | Статус перевірки |
+| Client / Application | Mode Required | Test Verification Status |
 | :--- | :--- | :---: |
-| **JBD BMS App** (iOS / Android) | `PROTO_JBD` | ✅ 100% Працює (Телеметрія, комірки, EEPROM, PIN) |
-| **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | ✅ 100% Працює (Повний моніторинг) |
-| **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | ✅ 100% Працює (8 комірок, Modbus D2, FET, SN, Версія) |
-| **Universal BMS Monitor** (ESP32-S3 Probe) | `PROTO_JBD` & `PROTO_DALY` | ✅ 100% Працює (Автовизначення типу BMS, онлайн через Tailscale) |
-| **ESPHome Daly / JBD Components** | `PROTO_JBD` & `PROTO_DALY` | ✅ Сумісно |
+| **JBD BMS App** (iOS / Android) | `PROTO_JBD` | ✅ 100% Operational (Telemetry, cells, EEPROM, PIN) |
+| **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | ✅ 100% Operational (Full monitoring) |
+| **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | ✅ 100% Operational (Cell voltages, Modbus D2, FET, SN, FW version) |
+| **Universal BMS Monitor** (ESP32-S3 Probe) | `PROTO_JBD` & `PROTO_DALY` | ✅ 100% Operational (Auto-protocol detection, Tailscale web dashboard) |
+| **ESPHome Daly / JBD Components** | `PROTO_JBD` & `PROTO_DALY` | ✅ Fully Compatible |
 
 ---
 
-## 📁 10. Структура файлів прошивки та бінарні релізи
+## 📁 10. Binary Releases & Flashing Guide
 
-* **Вихідний код**: [`src/main.cpp`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/src/main.cpp)
-* **Скрипт перемикання режиму**: [`switch_mode.sh`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/switch_mode.sh)
-* **Скомпільовані образи**:
-  * `bin/jbd_emulator_esp32_c6_factory.bin` — Повний образ прошивки для ESP32-C6 (прошивається за адресою `0x0000`).
-  * `bin/jbd_emulator_esp32_c6_firmware.bin` — Образ додатку OTA для ESP32-C6 (`0x10000`).
-  * `bin/jbd_emulator_esp32_s3_factory.bin` — Повний образ прошивки для ESP32-S3 (`0x0000`).
-  * `bin/jbd_emulator_esp32_s3_firmware.bin` — Образ додатку OTA для ESP32-S3 (`0x10000`).
+* **Source Code**: [`src/main.cpp`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/src/main.cpp)
+* **Mode Switcher Script**: [`switch_mode.sh`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/switch_mode.sh)
+* **Precompiled Production Binaries**:
+  * `bin/jbd_emulator_esp32_c6_factory.bin` — Complete factory image for ESP32-C6 (flash at `0x0000`).
+  * `bin/jbd_emulator_esp32_c6_firmware.bin` — OTA application image for ESP32-C6 (flash at `0x10000`).
+  * `bin/jbd_emulator_esp32_s3_factory.bin` — Complete factory image for ESP32-S3 (flash at `0x0000`).
+  * `bin/jbd_emulator_esp32_s3_firmware.bin` — OTA application image for ESP32-S3 (flash at `0x10000`).
 
-### Команда швидкої прошивки готового бінарника:
+### Quick Factory Flash Command:
 ```bash
 esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_esp32_c6_factory.bin
 ```

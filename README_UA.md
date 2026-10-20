@@ -1,9 +1,10 @@
 # 🔋 ESP32-C6 Dual BMS BLE Emulator: JBD & Daly Smart BMS
 
 <p align="center">
-  <a href="README.md"><b>English</b></a> |
-  <a href="README_UA.md"><b>Українська</b></a> |
-  <a href="PROJECT_CAPABILITIES.md"><b>📋 Детальний опис можливостей (MD)</b></a>
+  <a href="README.md"><b>English README</b></a> |
+  <a href="README_UA.md"><b>Українська README</b></a> |
+  <a href="PROJECT_CAPABILITIES.md"><b>📋 Capabilities Spec (EN)</b></a> |
+  <a href="PROJECT_CAPABILITIES_UA.md"><b>📋 Опис можливостей (UA)</b></a>
 </p>
 
 ---
@@ -133,7 +134,8 @@
 .
 ├── README.md                      # English documentation
 ├── README_UA.md                   # Українська документація
-├── PROJECT_CAPABILITIES.md        # Детальний технічний опис можливостей
+├── PROJECT_CAPABILITIES.md        # Технічна специфікація англійською (English)
+├── PROJECT_CAPABILITIES_UA.md     # Детальний технічний опис можливостей (Українська)
 ├── Daly.MD                        # Довідник та специфікація Daly Modbus
 ├── JBD_PROTOCOL_SPEC.md           # Бінарна специфікація протоколу JBD
 ├── JBD_REGISTER_MAP.md            # Карта регістрів EEPROM JBD
