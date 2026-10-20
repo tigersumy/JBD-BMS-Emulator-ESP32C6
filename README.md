@@ -84,11 +84,33 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 
 ---
 
-### 🔋 8S LiFePO4 Battery Physics Simulation (24V)
-- **Dynamic Cell Voltage Breathing**: Cell voltages continuously oscillate in the $3.275\text{–}3.288\text{ V}$ range (3–12 mV delta) using sine-wave variations and pseudorandom micro-jitter.
+### 🔋 Multi-Series Battery Physics & Configurations (4S / 8S / 16S ... 32S)
+- **Supported Battery Configurations**:
+  - **4S (12V / 12.8V LiFePO4)**:
+    - Operating range: $10.0\text{ V} \dots 14.6\text{ V}$ (nominal $12.8\text{ V}$).
+    - Target systems: 12V automotive, marine, RV/camper setups, portable power stations, and 12V telecom UPS.
+    - Calibration profile included: `4s standard LiFePO4 Alf-20210608.fig`.
+    - Daly firmware identity: `12_231116_001T` | JBD model: `JBD-SP04S020` / `DP04S007`.
+  - **8S (24V / 25.6V LiFePO4) — Default Profile**:
+    - Operating range: $20.0\text{ В} \dots 29.2\text{ В}$ (nominal $25.6\text{ В}$, loaded operating point at $17\text{ A}$ $\sim 26.24\text{ В}$, power draw $\sim 445\text{ W}$).
+    - Target systems: 24V home backup power, solar ESS, 24V hybrid inverters.
+    - Calibration profile included: `8s standard LiFePO4 Alf-20210608.fig`.
+    - Identity: Daly `DL-8S-200A` (`24_231116_001T`) | JBD `DB24SF01 V1.0` / `BS-26A-072-005`.
+  - **16S (48V / 51.2V LiFePO4)**:
+    - Operating range: $40.0\text{ В} \dots 58.4\text{ В}$ (nominal $51.2\text{ В}$).
+    - Target systems: Residential & industrial 48V solar hybrid inverters (Deye, Growatt, Victron, Must, Axioma, Luxpower) and server-rack lithium batteries.
+    - Calibration profile included: `16s standard LiFePO4 Alf-20210608.fig`.
+  - **Universal Dynamic Scaling (3S to 32S)**:
+    - Full protocol support for setting arbitrary series cell counts in runtime via JBD EEPROM (register `0x2F`) and Daly Modbus (registers `0x0031`/`0x0083`, commands `0x50`/`0xD6`).
+    - The physics engine dynamically computes pack voltage based on cell count: $U_{pack} = \sum_{i=1}^{N} U_{cell\_i}$.
+- **Chemistry Types Supported**:
+  - **LiFePO4 (LFP)**: $3.2\text{ V}$ nominal ($2.5\text{ V} \dots 3.65\text{ V}$). Common: 4S (12.8V), 8S (25.6V), 16S (51.2V).
+  - **Li-ion / NMC (Ternary)**: $3.6\text{–}3.7\text{ V}$ nominal ($2.8\text{ V} \dots 4.2\text{ V}$). Common: 3S (11.1V), 7S (25.9V), 10S (36V), 13S/14S (48V), 20S (72V).
+  - **LTO (Lithium Titanate)**: $2.3\text{–}2.4\text{ V}$ nominal ($1.5\text{ V} \dots 2.8\text{ В}$). Common: 5S/6S (12V), 10S/11S (24V), 20S/22S (48V).
+- **Dynamic Cell Voltage Breathing**: Cell voltages continuously oscillate in real-time with sine-wave variations and pseudorandom micro-jitter ($\Delta V \sim 3\text{–}12\text{ mV}$).
 - **Load Modes**:
-  - **Discharge**: $-17.00\text{ A}$, pack voltage $\sim 26.24\text{ V}$, power draw $\sim 445\text{ W}$.
-  - **Charge**: $+17.00\text{ A}$, pack voltage $\sim 27.20\text{ V}$.
+  - **Discharge**: $-17.00\text{ A}$ (for 8S pack voltage $\sim 26.24\text{ V}$, power draw $\sim 445\text{ W}$).
+  - **Charge**: $+25.00\text{ A}$ (with realistic charger ripple).
   - **Standby**: $0.00\text{ A}$, power draw $0\text{ W}$.
 - **Coulomb Counting**: Real-time integration of current ($I \times \Delta t$) updating remaining Ah and SOC %.
 - **FET Switch Responsiveness**: Turning off the Discharge FET immediately drops current to $0.00\text{ A}$ and power to $0\text{ W}$.
@@ -115,6 +137,9 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 ├── Daly.MD                        # Daly Modbus & BLE notes
 ├── JBD_PROTOCOL_SPEC.md           # JBD binary protocol specification
 ├── JBD_REGISTER_MAP.md            # JBD EEPROM register map
+├── 4s standard LiFePO4 Alf-20210608.fig   # 4S (12V) LiFePO4 configuration profile
+├── 8s standard LiFePO4 Alf-20210608.fig   # 8S (24V) LiFePO4 configuration profile
+├── 16s standard LiFePO4 Alf-20210608.fig  # 16S (48V) LiFePO4 configuration profile
 ├── platformio.ini                 # PlatformIO configuration (ESP32-C6 / ESP32-S3)
 ├── switch_mode.sh                 # Mode switcher script (JBD / Daly)
 ├── src/

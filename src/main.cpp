@@ -75,12 +75,17 @@ struct BMSState {
     uint8_t  software_version  = 0x76;   // v11.8 (matches live JBD BMS firmware 0x76)
     uint8_t  soc_percent       = 97;     // 97%
     uint8_t  fet_status        = 0x03;   // Bit0: Charge FET (1=ON), Bit1: Discharge FET (1=ON)
-    uint8_t  cell_count        = 8;      // 8S LiFePO4 (24V)
+    uint8_t  cell_count        = 8;      // Default: 8S LiFePO4 (24V). Dynamically supports 3S..32S (4S 12V, 8S 24V, 16S 48V, etc.)
     uint8_t  ntc_count         = 3;      // 3 NTC sensors (NTC1, NTC2, MOS Temp)
     uint16_t ntc1_temp_01k     = 2991;   // 26.0 °C (2731 + 260)
     uint16_t ntc2_temp_01k     = 2986;   // 25.5 °C (2731 + 255)
     uint16_t ntc3_temp_01k     = 2955;   // 22.4 °C (2731 + 224) - MOS Temp
-    uint16_t cell_mv[8]        = {3280, 3283, 3279, 3282, 3278, 3284, 3280, 3281};
+    uint16_t cell_mv[32]       = {
+        3280, 3283, 3279, 3282, 3278, 3284, 3280, 3281,
+        3281, 3280, 3282, 3279, 3283, 3281, 3280, 3282,
+        3280, 3282, 3279, 3281, 3283, 3280, 3282, 3281,
+        3281, 3280, 3282, 3279, 3283, 3281, 3280, 3282
+    };
     char     device_name[32]   = "BS-26A-072-005";
 
     // Mode and Simulation state
@@ -441,8 +446,8 @@ void sendBasicInfo() {
 
 // Build and send Cell Voltages (Register 0x04)
 void sendCellVoltages() {
-    uint8_t data[32];
-    uint8_t count = (g_bms.cell_count > 16) ? 16 : g_bms.cell_count;
+    uint8_t data[64];
+    uint8_t count = (g_bms.cell_count > 32) ? 32 : g_bms.cell_count;
     for (int i = 0; i < count; ++i) {
         data[i * 2]     = (uint8_t)(g_bms.cell_mv[i] >> 8);
         data[i * 2 + 1] = (uint8_t)(g_bms.cell_mv[i] & 0xFF);
@@ -686,23 +691,25 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
 
                     uint8_t respBuf[64] = {0};
                     if (offset == 0x58 && reqLen >= 16) {
-                        // Cell Voltages 1..8 in AFE RAM (16 bytes)
-                        for (int i = 0; i < 8; ++i) {
+                        // Cell Voltages in AFE RAM
+                        uint8_t cellsToSend = (uint8_t)min((size_t)(reqLen / 2), (size_t)min((int)g_bms.cell_count, 32));
+                        for (int i = 0; i < cellsToSend; ++i) {
                             respBuf[i * 2]     = (uint8_t)(g_bms.cell_mv[i] >> 8);
                             respBuf[i * 2 + 1] = (uint8_t)(g_bms.cell_mv[i] & 0xFF);
                         }
-                        sendJBDResponse(0xFA, respBuf, 16);
+                        sendJBDResponse(0xFA, respBuf, reqLen);
                     } else if (offset == 0x00 && reqLen == 1) {
                         respBuf[0] = 0x22;
                         sendJBDResponse(0xFA, respBuf, 1);
                     } else if (offset == 0x01 && reqLen == 1) {
-                        respBuf[0] = 0x08; // 8S
+                        respBuf[0] = g_bms.cell_count; // Cell count
                         sendJBDResponse(0xFA, respBuf, 1);
                     } else if (offset == 0x05 && reqLen == 1) {
                         respBuf[0] = 0x20;
                         sendJBDResponse(0xFA, respBuf, 1);
                     } else if (offset == 0x9B && reqLen == 1) {
-                        respBuf[0] = 0x08; // 8S
+                        respBuf[0] = g_bms.cell_count; // Cell count
+                        sendJBDResponse(0xFA, respBuf, 1);
                         sendJBDResponse(0xFA, respBuf, 1);
                     } else if (offset == 0x9E && reqLen <= 12) {
                         const char* sn = "DB24SF012024";
@@ -851,7 +858,7 @@ void sendDalyBleFrame(const uint8_t* frame, size_t len) {
 uint16_t getDalyHoldingRegister(uint16_t reg) {
     // 0x0000..0x001F (0..31): Cell voltages 1..32 in mV
     if (reg < 32) {
-        if (reg < g_bms.cell_count && reg < 8) {
+        if (reg < g_bms.cell_count && reg < 32) {
             return g_bms.cell_mv[reg];
         }
         return 0;
@@ -869,7 +876,7 @@ uint16_t getDalyHoldingRegister(uint16_t reg) {
     // 0x0047..0x0056 (71..86): Single cell voltages 1..16 in mV
     if (reg >= 0x0047 && reg <= 0x0056) {
         int idx = reg - 0x0047;
-        if (idx < g_bms.cell_count && idx < 8) {
+        if (idx < g_bms.cell_count && idx < 32) {
             return g_bms.cell_mv[idx];
         }
         return 0;
@@ -877,7 +884,7 @@ uint16_t getDalyHoldingRegister(uint16_t reg) {
 
     // Extremes and averages
     uint16_t maxV = 0, minV = 9999, sumV = 0;
-    for (int i = 0; i < 8 && i < g_bms.cell_count; ++i) {
+    for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
         if (g_bms.cell_mv[i] > maxV) maxV = g_bms.cell_mv[i];
         if (g_bms.cell_mv[i] < minV) minV = g_bms.cell_mv[i];
         sumV += g_bms.cell_mv[i];
@@ -1195,8 +1202,8 @@ void sendDalyP81Cells() {
         frame[3 + regIdx * 2 + 1] = (uint8_t)(val & 0xFF);
     };
 
-    for (int i = 0; i < 8; ++i) {
-        setReg(i, g_bms.cell_mv[i]);
+    for (int i = 0; i < 32; ++i) {
+        setReg(i, (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0);
     }
 
     int t1 = (int)((g_bms.ntc1_temp_01k - 2731) / 10) + 40;
@@ -1316,7 +1323,7 @@ void sendDalyExtremes91() {
     uint8_t data[8];
     uint16_t maxV = 0, minV = 9999;
     uint8_t maxIdx = 1, minIdx = 1;
-    for (uint8_t i = 0; i < g_bms.cell_count && i < 8; ++i) {
+    for (uint8_t i = 0; i < g_bms.cell_count && i < 32; ++i) {
         if (g_bms.cell_mv[i] > maxV) { maxV = g_bms.cell_mv[i]; maxIdx = i + 1; }
         if (g_bms.cell_mv[i] < minV) { minV = g_bms.cell_mv[i]; minIdx = i + 1; }
     }
@@ -1375,35 +1382,23 @@ void sendDalyStatus94() {
 }
 
 void sendDalyCells95() {
-    // 8S cells -> 3 frames (3 cells per frame)
-    uint8_t f1[8] = {
-        1,
-        (uint8_t)(g_bms.cell_mv[0] >> 8), (uint8_t)(g_bms.cell_mv[0] & 0xFF),
-        (uint8_t)(g_bms.cell_mv[1] >> 8), (uint8_t)(g_bms.cell_mv[1] & 0xFF),
-        (uint8_t)(g_bms.cell_mv[2] >> 8), (uint8_t)(g_bms.cell_mv[2] & 0xFF),
-        0
-    };
-    sendDalyResponse(0x95, f1);
-    delay(40);
-
-    uint8_t f2[8] = {
-        2,
-        (uint8_t)(g_bms.cell_mv[3] >> 8), (uint8_t)(g_bms.cell_mv[3] & 0xFF),
-        (uint8_t)(g_bms.cell_mv[4] >> 8), (uint8_t)(g_bms.cell_mv[4] & 0xFF),
-        (uint8_t)(g_bms.cell_mv[5] >> 8), (uint8_t)(g_bms.cell_mv[5] & 0xFF),
-        0
-    };
-    sendDalyResponse(0x95, f2);
-    delay(40);
-
-    uint8_t f3[8] = {
-        3,
-        (uint8_t)(g_bms.cell_mv[6] >> 8), (uint8_t)(g_bms.cell_mv[6] & 0xFF),
-        (uint8_t)(g_bms.cell_mv[7] >> 8), (uint8_t)(g_bms.cell_mv[7] & 0xFF),
-        0, 0,
-        0
-    };
-    sendDalyResponse(0x95, f3);
+    uint8_t count = (g_bms.cell_count > 32) ? 32 : g_bms.cell_count;
+    uint8_t totalFrames = (count + 2) / 3;
+    if (totalFrames == 0) totalFrames = 1;
+    for (uint8_t f = 0; f < totalFrames; ++f) {
+        uint8_t frame[8] = { (uint8_t)(f + 1), 0, 0, 0, 0, 0, 0, 0 };
+        for (int c = 0; c < 3; ++c) {
+            int cellIdx = f * 3 + c;
+            if (cellIdx < count) {
+                frame[1 + c * 2]     = (uint8_t)(g_bms.cell_mv[cellIdx] >> 8);
+                frame[1 + c * 2 + 1] = (uint8_t)(g_bms.cell_mv[cellIdx] & 0xFF);
+            }
+        }
+        sendDalyResponse(0x95, frame);
+        if (f < totalFrames - 1) {
+            delay(30);
+        }
+    }
 }
 
 void sendDalySensors96() {
@@ -2034,21 +2029,18 @@ void loop() {
             int d2 = (int)(wave2 * 3.5f);
             int d3 = (int)(sinf(t * 0.5f) * 3.0f);
 
-            g_bms.cell_mv[0] = 3280 + d1;
-            g_bms.cell_mv[1] = 3284 - d2;
-            g_bms.cell_mv[2] = 3279 + d2;
-            g_bms.cell_mv[3] = 3283 - d1;
-            g_bms.cell_mv[4] = 3278 + d3;
-            g_bms.cell_mv[5] = 3285 - d3;
-            g_bms.cell_mv[6] = 3281 + d1 - d2;
-            g_bms.cell_mv[7] = 3282 + d2 - d3;
+            uint32_t totalMv = 0;
+            for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
+                int pattern = (i % 4 == 0) ? d1 : ((i % 4 == 1) ? -d2 : ((i % 4 == 2) ? d2 : -d1));
+                int spread = (int)(i % 5) - 2;
+                g_bms.cell_mv[i] = 3280 + pattern + spread;
+                totalMv += g_bms.cell_mv[i];
+            }
 
             g_bms.ntc1_temp_01k = 2991 + (int)(wave1 * 2.0f); // ~26.0 °C
             g_bms.ntc2_temp_01k = 2986 + (int)(wave2 * 2.0f); // ~25.5 °C
             g_bms.ntc3_temp_01k = 3011 + (int)(wave1 * 3.0f); // ~28.0 °C (MOSFET heats up under 17A discharge)
 
-            uint32_t totalMv = 0;
-            for (int i = 0; i < 8; ++i) totalMv += g_bms.cell_mv[i];
             g_bms.pack_voltage_10mv = totalMv / 10;
         } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
             // Active Charge (+25A nominal with dynamic charger ripple)
@@ -2067,35 +2059,31 @@ void loop() {
             int d2 = (int)(wave2 * 3.5f);
             int d3 = (int)(sinf(t * 0.5f) * 3.0f);
 
-            g_bms.cell_mv[0] = 3450 + d1;
-            g_bms.cell_mv[1] = 3453 - d2;
-            g_bms.cell_mv[2] = 3448 + d2;
-            g_bms.cell_mv[3] = 3452 - d1;
-            g_bms.cell_mv[4] = 3449 + d3;
-            g_bms.cell_mv[5] = 3454 - d3;
-            g_bms.cell_mv[6] = 3450 + d1 - d2;
-            g_bms.cell_mv[7] = 3451 + d2 - d3;
+            uint32_t totalMv = 0;
+            for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
+                int pattern = (i % 4 == 0) ? d1 : ((i % 4 == 1) ? -d2 : ((i % 4 == 2) ? d2 : -d1));
+                int spread = (int)(i % 5) - 2;
+                g_bms.cell_mv[i] = 3450 + pattern + spread;
+                totalMv += g_bms.cell_mv[i];
+            }
 
             g_bms.ntc1_temp_01k = 2986 + (int)(wave1 * 2.0f); // 25.5 °C
             g_bms.ntc2_temp_01k = 2981 + (int)(wave2 * 2.0f); // 25.0 °C
             g_bms.ntc3_temp_01k = 3031 + (int)(wave2 * 3.0f); // ~30.0 °C (MOSFET heats up under 25A charge)
 
-            uint32_t totalMv = 0;
-            for (int i = 0; i < 8; ++i) totalMv += g_bms.cell_mv[i];
             g_bms.pack_voltage_10mv = totalMv / 10;
         } else {
-            // Idle Mode (0.00 A) - realistic resting LiFePO4 cells with micro-drift
+            // Idle Mode (0.00 A) - realistic resting LiFePO4 cells with micro-drift (~3.32V)
             g_bms.current_10ma = 0;
             int n = (int)(wave1 * 2.0f);
-            g_bms.cell_mv[0] = 3320 + n;
-            g_bms.cell_mv[1] = 3323 - n;
-            g_bms.cell_mv[2] = 3319 + n;
-            g_bms.cell_mv[3] = 3322 - n;
-            g_bms.cell_mv[4] = 3318 + n;
-            g_bms.cell_mv[5] = 3324 - n;
-            g_bms.cell_mv[6] = 3320;
-            g_bms.cell_mv[7] = 3321;
-            g_bms.pack_voltage_10mv = 2656 + n;
+            uint32_t totalMv = 0;
+            for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
+                int pattern = (i % 2 == 0) ? n : -n;
+                int spread = (int)(i % 4) - 2;
+                g_bms.cell_mv[i] = 3320 + pattern + spread;
+                totalMv += g_bms.cell_mv[i];
+            }
+            g_bms.pack_voltage_10mv = totalMv / 10;
             g_bms.ntc1_temp_01k = 2981; // 25.0 °C
             g_bms.ntc2_temp_01k = 2976; // 24.5 °C
             g_bms.ntc3_temp_01k = 2955; // 22.4 °C (MOSFET ambient resting)
