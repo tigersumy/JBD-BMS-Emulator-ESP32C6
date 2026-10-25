@@ -188,7 +188,24 @@ void initDoubleResetAndMode() {
     }
 
     g_proto = (EmulatorProtocol)savedProto;
+    uint8_t savedCells = s_prefs.getUChar("cell_cnt", 8);
+    if (savedCells >= 3 && savedCells <= 32) {
+        g_bms.cell_count = savedCells;
+    }
     g_bootTime = millis();
+}
+
+void setCellCount(uint8_t cnt) {
+    if (cnt < 3 || cnt > 32) return;
+    g_bms.cell_count = cnt;
+    s_prefs.putUChar("cell_cnt", cnt);
+    uint32_t totalMv = 0;
+    for (int i = 0; i < cnt && i < 32; ++i) {
+        totalMv += g_bms.cell_mv[i];
+    }
+    g_bms.pack_voltage_10mv = totalMv / 10;
+    Serial.printf("\n[SYSTEM] >>> Cell count updated to %uS! Pack Voltage: %.2fV <<<\n\n",
+                  cnt, g_bms.pack_voltage_10mv / 100.0f);
 }
 
 void toggleEmulatorMode() {
@@ -778,7 +795,7 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
                 if (dataLen >= 1) {
                     uint8_t newCnt = (dataLen >= 2) ? buf[5] : buf[4];
                     if (newCnt >= 3 && newCnt <= 32) {
-                        g_bms.cell_count = newCnt;
+                        setCellCount(newCnt);
                         Serial.printf("[JBD EEPROM] Cell Count updated: %uS\n", newCnt);
                     }
                 }
@@ -1166,7 +1183,7 @@ void handleDalyModbusWrite(uint16_t addr, uint16_t val) {
     } else if (addr == 0x0083) {
         // Cell count
         if (val >= 3 && val <= 32) {
-            g_bms.cell_count = (uint8_t)val;
+            setCellCount((uint8_t)val);
             Serial.printf("[DALY D2] Cell count updated: %uS\n", val);
         }
     }
@@ -1601,7 +1618,7 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
                 case 0xD6: { // Set cell count
                     uint8_t cnt = buf[4];
                     if (cnt >= 3 && cnt <= 32) {
-                        g_bms.cell_count = cnt;
+                        setCellCount(cnt);
                         Serial.printf("[DALY] Cell count updated: %uS\n", cnt);
                     }
                     sendDalyResponse(cmd, &buf[4]);
@@ -2114,8 +2131,9 @@ void loop() {
         const char* modeStr = (g_bms.current_10ma > 50) ? "CHARGING (+)" :
                               ((g_bms.current_10ma < -50) ? "DISCHARGING (-)" : "STANDBY (IDLE)");
 
-        Serial.printf("[STATUS] Proto: %s | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
+        Serial.printf("[STATUS] Proto: %s | Cells: %uS | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
                       (g_proto == PROTO_DALY) ? "DALY" : "JBD",
+                      g_bms.cell_count,
                       g_deviceConnected ? "CONNECTED" : "ADVERTISING",
                       modeStr, packV, currA, powerW, g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
     }
@@ -2131,6 +2149,20 @@ void loop() {
             setEmulatorMode(PROTO_JBD);
         } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
             setEmulatorMode(PROTO_DALY);
+        } else if (cmd.startsWith("cells ") || cmd.startsWith("cell ") || cmd.startsWith("s ")) {
+            int cnt = cmd.substring(cmd.indexOf(' ') + 1).toInt();
+            if (cnt >= 3 && cnt <= 32) {
+                setCellCount((uint8_t)cnt);
+            } else {
+                Serial.println(">>> Invalid cell count! Supported range: 3S..32S (e.g. '4s', '8s', '16s') <<<");
+            }
+        } else if (cmd.endsWith("s") && cmd.length() >= 2 && cmd.length() <= 3 && cmd.charAt(0) >= '0' && cmd.charAt(0) <= '9') {
+            int cnt = cmd.substring(0, cmd.length() - 1).toInt();
+            if (cnt >= 3 && cnt <= 32) {
+                setCellCount((uint8_t)cnt);
+            } else {
+                Serial.println(">>> Invalid cell count! Supported range: 3S..32S <<<");
+            }
         } else if (cmd == "t" || cmd == "telemetry") {
             Serial.printf(">>> Manual Telemetry Burst (proto=%s, connected=%d) <<<\n",
                           (g_proto == PROTO_DALY) ? "DALY" : "JBD", g_deviceConnected);
@@ -2171,14 +2203,15 @@ void loop() {
             Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) [Tip: to switch BMS type to Daly, type 'y' or 'daly'] <<<");
         } else if (cmd == "help" || cmd == "?") {
             Serial.println("\n--- Interactive Serial Commands ---");
-            Serial.println("  'j' or 'jbd'     : Switch to JBD BMS emulator");
-            Serial.println("  'y' or 'daly'    : Switch to DALY BMS emulator");
-            Serial.println("  'm' or 'toggle'  : Toggle BMS emulator mode");
-            Serial.println("  '1' / 'dis'      : Discharge mode (-17A)");
-            Serial.println("  '2' / 'chg'      : Charge mode (+25A)");
-            Serial.println("  '0' / 'idle'     : Idle mode (0A)");
-            Serial.println("  'f' / 'fet'      : Toggle Charge/Discharge MOSFETs");
-            Serial.println("  '+' / '-'        : Adjust SOC (+/- 1%)");
+            Serial.println("  'j' or 'jbd'         : Switch to JBD BMS emulator");
+            Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
+            Serial.println("  'm' or 'toggle'      : Toggle BMS emulator mode");
+            Serial.println("  '4s' / '8s' / '16s'  : Set battery series count (or 'cells <N>', 3..32)");
+            Serial.println("  '1' / 'dis'          : Discharge mode (-17A)");
+            Serial.println("  '2' / 'chg'          : Charge mode (+25A)");
+            Serial.println("  '0' / 'idle'         : Idle mode (0A)");
+            Serial.println("  'f' / 'fet'          : Toggle Charge/Discharge MOSFETs");
+            Serial.println("  '+' / '-'            : Adjust SOC (+/- 1%)");
             Serial.println("-----------------------------------\n");
         }
     }

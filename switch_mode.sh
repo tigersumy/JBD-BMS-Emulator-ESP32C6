@@ -51,14 +51,23 @@ def main():
         'toggle': 'm\n',
         'm': 'm\n',
         'status': '\n',
-        'help': 'help\n'
+        'help': 'help\n',
+        '4s': '4s\n',
+        '8s': '8s\n',
+        '16s': '16s\n',
     }
 
     send_cmd = cmd_map.get(cmd_arg)
     if not send_cmd:
-        print(f"⚠️ Невідома команда '{cmd_arg}'. Доступні: jbd, daly, toggle, status, help")
-        ser.close()
-        sys.exit(1)
+        if (cmd_arg.endswith('s') and cmd_arg[:-1].isdigit()) or cmd_arg.isdigit():
+            val = cmd_arg[:-1] if cmd_arg.endswith('s') else cmd_arg
+            send_cmd = f"{val}s\n"
+        elif cmd_arg in ('cell', 'cells') and len(sys.argv) > 2 and sys.argv[2].isdigit():
+            send_cmd = f"cells {sys.argv[2]}\n"
+        else:
+            print(f"⚠️ Невідома команда '{cmd_arg}'. Доступні: jbd, daly, toggle, 4s, 8s, 16s, status, help")
+            ser.close()
+            sys.exit(1)
 
     if cmd_arg != 'status':
         ser.write(send_cmd.encode('utf-8'))
