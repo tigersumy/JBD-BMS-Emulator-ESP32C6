@@ -31,6 +31,7 @@ flowchart TD
         RGB["RGB LED (WS2812B @ GPIO 8)"]
         USB["USB-CDC Serial CLI"]
         BLE["BLE 5.0 Radio (NimBLE)"]
+        WIFI["Wi-Fi 6 Web Server\n(AP + STA / mDNS)"]
     end
 
     subgraph Modes ["Режими емуляції (Dual-Protocol)"]
@@ -41,12 +42,15 @@ flowchart TD
     subgraph Clients ["Підтримувані клієнти"]
         AppJBD["JBD BMS / Xiaoxiang App\n(iOS / Android)"]
         AppDaly["Smart BMS App (Daly)\n(iOS / Android)"]
+        WebUI["Web Dashboard (Браузер)\nhttp://bms-emulator.local"]
         Probe["Universal BMS Monitor\n(ESP32-S3 Tailscale Probe)"]
         HA["ESPHome / Home Assistant"]
     end
 
     Core --> JBD
     Core --> DALY
+    Core --> WIFI
+    WIFI --> WebUI
     JBD --> AppJBD
     JBD --> Probe
     DALY --> AppDaly
@@ -244,7 +248,53 @@ ESP32-C6 SuperMini оснащено адресним світлодіодом WS
 
 ---
 
-## 📁 10. Структура файлів прошивки та бінарні релізи
+## 🌐 10. Вбудована Веб-панель керування та мережеві можливості (Modes A & B)
+
+Емулятор оснащено повноцінним вбудованим асинхронним веб-сервером із сучасним Dark Glassmorphic інтерфейсом (у стилі проєктів SandiSolar та Universal BMS Monitor), який працює паралельно з BLE-емуляцією без просідання продуктивності:
+
+### А. Режими мережевого підключення
+* **Варіант А (Автономна точка доступу AP / Captive Portal)**:
+  * Емулятор створює власну Wi-Fi мережу з SSID **`BMS-Emulator-Setup`** (IP-адреса: `192.168.4.1`, відкрита, без пароля).
+  * **DNS Captive Portal**: порт 53 перехоплює всі запити й автоматично відкриває веб-інтерфейс при підключенні зі смартфона або комп'ютера (підтримка Android, iOS / macOS Captive Assistant, Windows NCSI).
+* **Варіант Б (Локальна Wi-Fi мережа / Station Mode)**:
+  * Підключення до домашньої або лабораторної мережі Wi-Fi (2.4 ГГц) через сторінку `/setup`.
+  * **mDNS Responder**: доступ до веб-панелі за зручним доменом **`http://bms-emulator.local`** (або через IP, виданий DHCP).
+  * **Fail-Safe Fallback**: у разі недоступності роутера або збою аутентифікації емулятор автоматично активує режим точки доступу AP.
+
+### Б. Можливості веб-інтерфейсу (Dark Glassmorphic UI)
+* **Двомовність (UA / EN)**: миттєве перемикання мови інтерфейсу в 1 клік зі збереженням вибору в `localStorage`.
+* **Жива телеметрія (Live KPI)**:
+  * Загальна напруга пакета ($V$), струм розряду/заряду ($A$), вихідна потужність ($W$), рівень SOC ($0\dots 100\%$), залишкова ємність ($Ah$), температури датчиків NTC ($^\circ C$) та дельта розбалансу $\Delta V$ ($mV$).
+* **Матриця напруг комірок (Cell Voltage Matrix)**:
+  * Динамічне відображення напруг кожної підключеної комірки ($mV$) із кольоровими смужками стану та автоматичним виділенням мінімальної (**MIN**, синій) та максимальної (**MAX**, зелений) комірки.
+* **Швидке перемикання конфігурацій (Cell Count Presets)**:
+  * Кнопки швидкого вибору **4S (12V)**, **8S (24V)**, **16S (48V)** або введення будь-якого довільного значення від **3S до 32S** на льоту. Налаштування одразу зберігаються в NVS Flash.
+* **Керування симуляцією та навантаженням**:
+  * Перемикання режимів: **Розряд** ($-17\text{ А}$), **Заряд** ($+25\text{ А}$), **Спокій** ($0\text{ А}$).
+  * Повзунок ручного регулювання SOC ($0\dots 100\%$) з миттєвим перерахунком напруг та залишкової ємності.
+  * Незалежні тумблери керування ключами **Charge MOSFET** та **Discharge MOSFET**.
+  * Перемикач симуляції протоколу: **JBD BMS** $\leftrightarrow$ **Daly Smart BMS**.
+* **Оновлення прошивки по повітрю (Web OTA)**:
+  * Можливість прошити новий файл `firmware.bin` прямо через веб-інтерфейс без використання USB-кабелю.
+
+### В. REST API ендпоінти
+| Метод | Ендпоінт | Опис та параметри |
+| :--- | :--- | :--- |
+| `GET` | `/api/data` | Повний JSON-зріз поточної телеметрії, конфігурації комірок та ключів FET |
+| `POST` | `/api/set-cells` | Зміна кількості комірок: `cells=4`, `cells=8`, `cells=16` (або `3..32`) |
+| `POST` | `/api/set-proto` | Зміна протоколу BMS: `proto=jbd` або `proto=daly` |
+| `POST` | `/api/set-mode` | Зміна робочого режиму батареї: `mode=discharge`, `mode=charge`, `mode=standby` |
+| `POST` | `/api/set-soc` | Зміна рівня SOC у відсотках: `soc=0..100` |
+| `POST` | `/api/set-fet` | Керування транзисторами: `fet=charge\|discharge`, `state=0\|1` |
+| `GET` | `/api/scan-wifi` | Сканування навколишніх Wi-Fi мереж із поверненням списку SSID та RSSI |
+| `POST` | `/api/save-wifi` | Збереження облікових даних Wi-Fi: `ssid=...`, `pass=...` та підключення |
+| `POST` | `/api/reset-wifi`| Скидання налаштувань Wi-Fi та повернення в автономний режим AP |
+| `POST` | `/api/restart` | Програмне перезавантаження плати ESP32 |
+| `POST` | `/update` | Завантаження нового бінарного файлу прошивки (OTA Update) |
+
+---
+
+## 📁 11. Структура файлів прошивки та бінарні релізи
 
 * **Вихідний код**: [`src/main.cpp`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/src/main.cpp)
 * **Скрипт перемикання режиму**: [`switch_mode.sh`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/switch_mode.sh)

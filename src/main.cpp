@@ -2,6 +2,13 @@
 #include <NimBLEDevice.h>
 #include <esp_mac.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <ESPmDNS.h>
+#include <Update.h>
+#include <ArduinoJson.h>
+#include "WebDashboard.h"
 
 // ============================================================================
 // Device & BLE Profile Configuration
@@ -1642,6 +1649,300 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 // ============================================================================
+// Wi-Fi AP & Station Web Dashboard Engine
+// ============================================================================
+static WebServer g_httpServer(80);
+static DNSServer g_dnsServer;
+static bool g_isApMode = false;
+static String g_wifiSsid = "";
+static String g_wifiPass = "";
+
+void startApMode() {
+    g_isApMode = true;
+    WiFi.disconnect(true, true);
+    delay(100);
+    WiFi.mode(WIFI_AP);
+    IPAddress apIP(192, 168, 4, 1);
+    WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+    bool apOk = WiFi.softAP("BMS-Emulator-Setup", nullptr, 1, 0, 4);
+    g_dnsServer.start(53, "*", apIP);
+    Serial.println("\n[WIFI] =======================================================");
+    Serial.printf("[WIFI] Started AP Mode: 'BMS-Emulator-Setup' (192.168.4.1) [Status: %s]\n", apOk ? "OK" : "FAILED");
+    Serial.println("[WIFI] Captive Portal active. Connect and open 192.168.4.1");
+    Serial.println("[WIFI] =======================================================\n");
+}
+
+void setupWebServerRoutes() {
+    // Favicon
+    g_httpServer.on("/favicon.svg", HTTP_GET, []() {
+        g_httpServer.sendHeader("Cache-Control", "max-age=86400");
+        g_httpServer.send_P(200, "image/svg+xml", FAVICON_SVG);
+    });
+    g_httpServer.on("/favicon.ico", HTTP_GET, []() {
+        g_httpServer.sendHeader("Location", "/favicon.svg", true);
+        g_httpServer.send(302, "text/plain", "");
+    });
+
+    // Main Dashboard & Captive Portal
+    g_httpServer.on("/", HTTP_GET, []() {
+        if (g_isApMode) {
+            String host = g_httpServer.hostHeader();
+            if (host.length() > 0 && host.indexOf("192.168.4.1") < 0) {
+                // Captive portal redirect to dashboard
+                g_httpServer.sendHeader("Location", "http://192.168.4.1/", true);
+                g_httpServer.send(302, "text/plain", "");
+                return;
+            }
+        }
+        g_httpServer.send_P(200, "text/html", INDEX_HTML);
+    });
+
+    // Wi-Fi Setup Page
+    g_httpServer.on("/setup", HTTP_GET, []() {
+        g_httpServer.send_P(200, "text/html", SETUP_HTML);
+    });
+
+    // Captive Portal standard endpoints
+    auto handleCaptive = []() {
+        g_httpServer.sendHeader("Location", "http://192.168.4.1/", true);
+        g_httpServer.send(302, "text/plain", "");
+    };
+    g_httpServer.on("/generate_204", HTTP_GET, handleCaptive);
+    g_httpServer.on("/hotspot-detect.html", HTTP_GET, handleCaptive);
+    g_httpServer.on("/connectivity-check.html", HTTP_GET, handleCaptive);
+    g_httpServer.on("/ncsi.txt", HTTP_GET, handleCaptive);
+
+    // API: Live Telemetry Data
+    g_httpServer.on("/api/data", HTTP_GET, []() {
+        JsonDocument doc;
+        doc["proto"] = (g_proto == PROTO_DALY) ? "DALY" : "JBD";
+        doc["device_name"] = (g_proto == PROTO_DALY) ? DALY_DEVICE_NAME : BLE_DEVICE_NAME;
+        doc["cell_count"] = g_bms.cell_count;
+        doc["pack_voltage"] = g_bms.pack_voltage_10mv / 100.0f;
+        doc["current"] = g_bms.current_10ma / 100.0f;
+        doc["power"] = (g_bms.pack_voltage_10mv / 100.0f) * (g_bms.current_10ma / 100.0f);
+        doc["soc"] = g_bms.soc_percent;
+        doc["remain_ah"] = g_bms.remain_cap_10mah / 100.0f;
+        doc["nominal_ah"] = g_bms.nominal_cap_10mah / 100.0f;
+
+        JsonArray arr = doc["cells"].to<JsonArray>();
+        uint16_t minMv = 9999, maxMv = 0;
+        int minIdx = 0, maxIdx = 0;
+        for (int i = 0; i < g_bms.cell_count && i < 32; ++i) {
+            arr.add(g_bms.cell_mv[i]);
+            if (g_bms.cell_mv[i] < minMv) { minMv = g_bms.cell_mv[i]; minIdx = i; }
+            if (g_bms.cell_mv[i] > maxMv) { maxMv = g_bms.cell_mv[i]; maxIdx = i; }
+        }
+        doc["min_cell_mv"] = (minMv == 9999) ? 0 : minMv;
+        doc["min_cell_idx"] = minIdx;
+        doc["max_cell_mv"] = maxMv;
+        doc["max_cell_idx"] = maxIdx;
+        doc["delta_mv"] = (maxMv >= minMv && minMv != 9999) ? (maxMv - minMv) : 0;
+
+        doc["t1"] = ((int)g_bms.ntc1_temp_01k - 2731) / 10.0f;
+        doc["t2"] = ((int)g_bms.ntc2_temp_01k - 2731) / 10.0f;
+        doc["t_mos"] = ((int)g_bms.ntc3_temp_01k - 2731) / 10.0f;
+        doc["fet_charge"] = (g_bms.fet_status & 0x01) != 0;
+        doc["fet_discharge"] = (g_bms.fet_status & 0x02) != 0;
+        doc["mode"] = (g_bms.mode == MODE_CHARGE) ? "charge" : ((g_bms.mode == MODE_DISCHARGE) ? "discharge" : "idle");
+        doc["wifi_mode"] = g_isApMode ? "AP" : "STA";
+        doc["ip"] = g_isApMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+        doc["rssi"] = g_isApMode ? 0 : WiFi.RSSI();
+        doc["free_heap"] = ESP.getFreeHeap();
+        doc["uptime_sec"] = millis() / 1000;
+
+        String out;
+        serializeJson(doc, out);
+        g_httpServer.send(200, "application/json", out);
+    });
+
+    // API: Set Cell Count (4S, 8S, 16S, or 3S..32S)
+    g_httpServer.on("/api/set-cells", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        int cnt = doc["cells"] | 8;
+        if (cnt >= 3 && cnt <= 32) {
+            setCellCount((uint8_t)cnt);
+        }
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+    // API: Switch Protocol (JBD <-> Daly)
+    g_httpServer.on("/api/set-proto", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        String p = doc["proto"] | "";
+        p.toLowerCase();
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        if (p == "daly" && g_proto != PROTO_DALY) {
+            delay(200);
+            setEmulatorMode(PROTO_DALY);
+        } else if (p == "jbd" && g_proto != PROTO_JBD) {
+            delay(200);
+            setEmulatorMode(PROTO_JBD);
+        }
+    });
+
+    // API: Set Simulation Mode (discharge, charge, idle)
+    g_httpServer.on("/api/set-mode", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        String m = doc["mode"] | "";
+        m.toLowerCase();
+        if (m == "discharge" || m == "dis") g_bms.mode = MODE_DISCHARGE;
+        else if (m == "charge" || m == "chg") g_bms.mode = MODE_CHARGE;
+        else if (m == "idle") g_bms.mode = MODE_IDLE;
+        updateStatusLed();
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+    // API: Set SOC %
+    g_httpServer.on("/api/set-soc", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        int s = doc["soc"] | -1;
+        if (s >= 0 && s <= 100) {
+            g_bms.soc_percent = (uint8_t)s;
+            g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * s) / 100);
+            updateStatusLed();
+        }
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+    // API: Set FET State (Charge/Discharge)
+    g_httpServer.on("/api/set-fet", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        String fet = doc["fet"] | "";
+        bool state = doc["state"] | false;
+        if (fet == "charge") {
+            if (state) g_bms.fet_status |= 0x01; else g_bms.fet_status &= ~0x01;
+        } else if (fet == "discharge") {
+            if (state) g_bms.fet_status |= 0x02; else g_bms.fet_status &= ~0x02;
+        }
+        updateStatusLed();
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+    // API: Scan Wi-Fi Networks
+    g_httpServer.on("/api/scan-wifi", HTTP_GET, []() {
+        int n = WiFi.scanNetworks(false, false);
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        for (int i = 0; i < n; i++) {
+            JsonObject item = arr.add<JsonObject>();
+            item["ssid"] = WiFi.SSID(i);
+            item["rssi"] = WiFi.RSSI(i);
+            item["secure"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+        }
+        WiFi.scanDelete();
+        String out;
+        serializeJson(doc, out);
+        g_httpServer.send(200, "application/json", out);
+    });
+
+    // API: Save Wi-Fi Credentials
+    g_httpServer.on("/api/save-wifi", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        String ssid = doc["ssid"] | "";
+        String pass = doc["pass"] | "";
+        if (ssid.length() > 0) {
+            s_prefs.putString("wifi_ssid", ssid);
+            s_prefs.putString("wifi_pass", pass);
+        }
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        delay(500);
+        esp_restart();
+    });
+
+    // API: Reset Wi-Fi Credentials
+    g_httpServer.on("/api/reset-wifi", HTTP_POST, []() {
+        s_prefs.remove("wifi_ssid");
+        s_prefs.remove("wifi_pass");
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        delay(500);
+        esp_restart();
+    });
+
+    // API: Restart Device
+    g_httpServer.on("/api/restart", HTTP_POST, []() {
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        delay(500);
+        esp_restart();
+    });
+
+    // OTA Update Form Handler
+    g_httpServer.on("/update", HTTP_POST, []() {
+        g_httpServer.sendHeader("Connection", "close");
+        g_httpServer.send(200, "text/plain", (Update.hasError()) ? "UPDATE FAILED" : "UPDATE SUCCESSFUL - Restarting...");
+        delay(500);
+        esp_restart();
+    }, []() {
+        HTTPUpload& upload = g_httpServer.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            Serial.printf("[OTA] Update started: %s\n", upload.filename.c_str());
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_END) {
+            if (Update.end(true)) {
+                Serial.printf("[OTA] Update Success: %u bytes\n", upload.totalSize);
+            } else {
+                Update.printError(Serial);
+            }
+        }
+    });
+
+    g_httpServer.begin();
+    Serial.println("[HTTP] Web Server started on port 80");
+}
+
+void initWiFiAndWebServer() {
+    g_wifiSsid = s_prefs.getString("wifi_ssid", "");
+    g_wifiPass = s_prefs.getString("wifi_pass", "");
+
+    if (g_wifiSsid.length() > 0) {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+        Serial.printf("[WIFI] Connecting to '%s'...", g_wifiSsid.c_str());
+
+        uint32_t startAttempt = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
+            delay(300);
+            Serial.print(".");
+        }
+        Serial.println();
+
+        if (WiFi.status() == WL_CONNECTED) {
+            g_isApMode = false;
+            Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+            if (MDNS.begin("bms-emulator")) {
+                MDNS.addService("http", "tcp", 80);
+                Serial.println("[MDNS] Responding at http://bms-emulator.local");
+            }
+        } else {
+            Serial.println("[WIFI] Connection failed. Fallback to AP Mode...");
+            startApMode();
+        }
+    } else {
+        startApMode();
+    }
+
+    setupWebServerRoutes();
+}
+
+// ============================================================================
 // Setup
 // ============================================================================
 void setup() {
@@ -1961,12 +2262,19 @@ void setup() {
         Serial.println("[BLE] Advertising started successfully as 'BS-26A-072-005' with PIN 123456.");
         Serial.println("[BLE] Ready for connection from XiaoxiangBMS, JBD BMS, or ESP32 Universal Monitor...");
     }
+
+    initWiFiAndWebServer();
 }
 
 // ============================================================================
 // Main Loop (Physics Simulation + Telemetry + Interactive Control)
 // ============================================================================
 void loop() {
+    if (g_isApMode) {
+        g_dnsServer.processNextRequest();
+    }
+    g_httpServer.handleClient();
+
     unsigned long now = millis();
 
     // Expire double reset window after 2.5 seconds of stable running
@@ -2131,9 +2439,11 @@ void loop() {
         const char* modeStr = (g_bms.current_10ma > 50) ? "CHARGING (+)" :
                               ((g_bms.current_10ma < -50) ? "DISCHARGING (-)" : "STANDBY (IDLE)");
 
-        Serial.printf("[STATUS] Proto: %s | Cells: %uS | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
+        Serial.printf("[STATUS] Proto: %s | Cells: %uS | WiFi: %s (%s) | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
                       (g_proto == PROTO_DALY) ? "DALY" : "JBD",
                       g_bms.cell_count,
+                      g_isApMode ? "AP" : "STA",
+                      g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
                       g_deviceConnected ? "CONNECTED" : "ADVERTISING",
                       modeStr, packV, currA, powerW, g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
     }
@@ -2149,6 +2459,27 @@ void loop() {
             setEmulatorMode(PROTO_JBD);
         } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
             setEmulatorMode(PROTO_DALY);
+        } else if (cmd == "w" || cmd == "wifi") {
+            Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
+                          g_isApMode ? "AP (BMS-Emulator-Setup)" : "STA",
+                          g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
+                          g_isApMode ? "BMS-Emulator-Setup" : g_wifiSsid.c_str(),
+                          g_isApMode ? 0 : WiFi.RSSI(),
+                          ESP.getFreeHeap());
+        } else if (cmd.startsWith("wifi ") || cmd.startsWith("connect ")) {
+            int sp1 = cmd.indexOf(' ');
+            int sp2 = cmd.indexOf(' ', sp1 + 1);
+            if (sp1 > 0 && sp2 > 0) {
+                String s = cmd.substring(sp1 + 1, sp2);
+                String p = cmd.substring(sp2 + 1);
+                s_prefs.putString("wifi_ssid", s);
+                s_prefs.putString("wifi_pass", p);
+                Serial.printf(">>> Wi-Fi credentials saved for SSID '%s'! Restarting...\n", s.c_str());
+                delay(500);
+                esp_restart();
+            } else {
+                Serial.println(">>> Usage: wifi <SSID> <PASSWORD> <<<");
+            }
         } else if (cmd.startsWith("cells ") || cmd.startsWith("cell ") || cmd.startsWith("s ")) {
             int cnt = cmd.substring(cmd.indexOf(' ') + 1).toInt();
             if (cnt >= 3 && cnt <= 32) {

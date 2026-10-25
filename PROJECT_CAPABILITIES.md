@@ -31,6 +31,7 @@ flowchart TD
         RGB["RGB LED (WS2812B @ GPIO 8)"]
         USB["USB-CDC Serial CLI"]
         BLE["BLE 5.0 Radio (NimBLE)"]
+        WIFI["Wi-Fi 6 Web Server\n(AP + STA / mDNS)"]
     end
 
     subgraph Modes ["Dual-Protocol Emulation Modes"]
@@ -41,12 +42,15 @@ flowchart TD
     subgraph Clients ["Supported Client Ecosystem"]
         AppJBD["JBD BMS / Xiaoxiang App\n(iOS / Android)"]
         AppDaly["Smart BMS App (Daly)\n(iOS / Android)"]
+        WebUI["Web Dashboard (Browser)\nhttp://bms-emulator.local"]
         Probe["Universal BMS Monitor\n(ESP32-S3 Tailscale Probe)"]
         HA["ESPHome / Home Assistant"]
     end
 
     Core --> JBD
     Core --> DALY
+    Core --> WIFI
+    WIFI --> WebUI
     JBD --> AppJBD
     JBD --> Probe
     DALY --> AppDaly
@@ -244,7 +248,53 @@ Interactive control is available via any serial terminal connected to the board:
 
 ---
 
-## 📁 10. Binary Releases & Flashing Guide
+## 🌐 10. Embedded Wi-Fi Web Dashboard & Network Architecture (Modes A & B)
+
+The emulator includes a high-performance asynchronous HTTP web server with a modern Dark Glassmorphic web dashboard (matching the aesthetics of the SandiSolar and Universal BMS Monitor projects), running concurrently alongside the NimBLE BLE stack without performance degradation:
+
+### A. Wi-Fi Operational Modes
+* **Mode A (Standalone Access Point / Captive Portal)**:
+  * Generates a dedicated Wi-Fi network with SSID **`BMS-Emulator-Setup`** (IP: `192.168.4.1`, open / no password).
+  * **DNS Captive Portal**: Listens on port 53 and intercepts all DNS queries, automatically popping up the management portal on smartphones, tablets, and laptops (supports Apple iOS/macOS Captive Assistant, Android Captive Check, and Windows NCSI).
+* **Mode B (Local Wi-Fi Network / Station Mode)**:
+  * Easily joins an existing home, lab, or workbench Wi-Fi router (2.4 GHz) via the `/setup` configuration portal.
+  * **mDNS Responder**: Instantly accessible across local LAN devices at **`http://bms-emulator.local`** (or via its DHCP-assigned IP).
+  * **Fail-Safe Fallback**: If router credentials fail or Wi-Fi drops out, the emulator automatically reverts to Mode A (AP mode).
+
+### B. Dashboard Features (Dark Glassmorphic UI)
+* **Bilingual Support (UA / EN)**: 1-click instantaneous language toggle stored in browser `localStorage`.
+* **Live KPI Telemetry Cards**:
+  * Total pack voltage ($V$), charge/discharge current ($A$), net power ($W$), state-of-charge ($0\dots 100\%$), remaining capacity ($Ah$), NTC temperature sensors ($^\circ C$), and cell voltage spread $\Delta V$ ($mV$).
+* **Cell Voltage Matrix**:
+  * Dynamic bargraph visualization of all configured individual cell voltages ($mV$), automatically highlighting the minimum (**MIN**, blue) and maximum (**MAX**, green) cells.
+* **Cell Configuration Presets**:
+  * Quick preset selector buttons for **4S (12V)**, **8S (24V)**, and **16S (48V)**, or custom values from **3S up to 32S** with instant NVS non-volatile persistence.
+* **Simulation & Load Controls**:
+  * Operating modes: **Discharge** ($-17\text{ A}$), **Charge** ($+25\text{ A}$), and **Standby** ($0\text{ А}$).
+  * Interactive SOC slider ($0\dots 100\%$) with real-time recalculation of cell voltages and remaining capacity.
+  * Independent **Charge MOSFET** and **Discharge MOSFET** switch controls.
+  * 1-click protocol switch: **JBD BMS** $\leftrightarrow$ **Daly Smart BMS**.
+* **Web OTA Firmware Update**:
+  * Seamless browser-based OTA firmware upgrade by uploading a `.bin` image without requiring a physical USB connection.
+
+### C. REST API Reference
+| Method | Endpoint | Description & Parameters |
+| :--- | :--- | :--- |
+| `GET` | `/api/data` | Full JSON snapshot of live battery telemetry, cell voltages, and FET status |
+| `POST` | `/api/set-cells` | Dynamically set cell count: `cells=4`, `cells=8`, `cells=16` (or `3..32`) |
+| `POST` | `/api/set-proto` | Switch active BMS protocol: `proto=jbd` or `proto=daly` |
+| `POST` | `/api/set-mode` | Set operating mode: `mode=discharge`, `mode=charge`, `mode=standby` |
+| `POST` | `/api/set-soc` | Set battery SOC percentage: `soc=0..100` |
+| `POST` | `/api/set-fet` | Control MOSFET switches: `fet=charge\|discharge`, `state=0\|1` |
+| `GET` | `/api/scan-wifi` | Scan nearby Wi-Fi networks returning list of SSIDs and signal RSSI |
+| `POST` | `/api/save-wifi` | Save Wi-Fi credentials (`ssid=...`, `pass=...`) and attempt connection |
+| `POST` | `/api/reset-wifi`| Erase saved Wi-Fi configuration and revert to Mode A (AP) |
+| `POST` | `/api/restart` | Software reboot of the ESP32 microcontroller |
+| `POST` | `/update` | Multipart firmware image upload for Web OTA updating |
+
+---
+
+## 📁 11. Binary Releases & Flashing Guide
 
 * **Source Code**: [`src/main.cpp`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/src/main.cpp)
 * **Mode Switcher Script**: [`switch_mode.sh`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/switch_mode.sh)

@@ -42,6 +42,26 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 
 ---
 
+### 🌐 Embedded Wi-Fi Web Management Dashboard
+- **Dual Network Access Modes**:
+  - **Mode A (Standalone Wi-Fi AP & Captive Portal)**:
+    - Automatically hosts an open Wi-Fi network: **`BMS-Emulator-Setup`** (IP `192.168.4.1`).
+    - Integrated DNS Captive Portal prompts phones/laptops to open the dashboard immediately upon connection.
+  - **Mode B (Home / Lab Wi-Fi Station)**:
+    - Connects to your local Wi-Fi router via the `/setup` page.
+    - Discoverable on the network via mDNS: **`http://bms-emulator.local`** (or device local IP).
+    - Automatic AP fallback if local Wi-Fi is unreachable.
+- **Web UI Features (Dark Glassmorphic UI, UA / EN bilingual)**:
+  - 📊 **Live Telemetry Monitoring**: Pack voltage, charge/discharge current, output Watts, battery SOC %, remaining Ah, temperatures, and cell voltage delta $\Delta V$ (mV).
+  - 🔋 **Instant Battery Series Configuration**: 1-click preset buttons for **4S (12V)**, **8S (24V)**, and **16S (48V)**, plus dynamic selection from **3S up to 32S** persisted in NVS Flash.
+  - 🔄 **BMS Protocol Switcher**: Seamlessly toggle between **JBD BMS** (`BS-26A`) and **Daly Smart BMS** (`DL-4018`) modes.
+  - ⚡ **Load & Physics Simulation**: Select between **Discharge** (-17A), **Charge** (+25A), and **Standby** (0A), with live SOC slider (0–100%).
+  - 🛡️ **MOSFET Switch Control**: Independent toggling of Charge MOS and Discharge MOS.
+  - 📈 **Cell Voltages Matrix**: Individual cell voltage cards with color-coded battery level indicators and automated Min/Max cell identification.
+  - 🚀 **Over-The-Air Firmware Updates (Web OTA)**: Upload compiled `.bin` firmware directly via the browser without USB.
+
+---
+
 ### 🔄 Dual-Protocol Architecture (JBD ↔ Daly)
 - **Instant Mode Switching**:
   - **Hardware Double Reset**: Double-clicking the **RST** button on the ESP32-C6 board within 1.5 seconds toggles between JBD and Daly modes. Mode is persisted across reboots in NVS Flash.
@@ -144,6 +164,8 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 ├── 16s standard LiFePO4 Alf-20210608.fig  # 16S (48V) LiFePO4 configuration profile
 ├── platformio.ini                 # PlatformIO configuration (ESP32-C6 / ESP32-S3)
 ├── switch_mode.sh                 # Mode switcher script (JBD / Daly)
+├── include/
+│   └── WebDashboard.h             # Embedded Web Management Dashboard (HTML/CSS/JS)
 ├── src/
 │   └── main.cpp                   # C++ emulator source code (NimBLE-Arduino)
 └── bin/                           # Ready-to-flash precompiled binaries
