@@ -2199,8 +2199,18 @@ void buildAntTelemetryFrame(uint8_t* frame) {
 
 // Generic helper: Send BLE notification in standard 20-byte chunks matching genuine BLE hardware (MTU=23)
 // Required for reliable transmission of large frames (Ant 140B, JK 300B) to iOS and Android apps
+static SemaphoreHandle_t s_bleTxMutex = nullptr;
+
 void sendBleChunks(NimBLECharacteristic* pChar, const uint8_t* data, size_t totalLen, size_t chunkSize = 20, uint32_t delayMs = 15) {
     if (!g_deviceConnected || !pChar) return;
+    if (!s_bleTxMutex) {
+        s_bleTxMutex = xSemaphoreCreateMutex();
+    }
+    if (s_bleTxMutex) {
+        if (xSemaphoreTake(s_bleTxMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            return;
+        }
+    }
     for (size_t offset = 0; offset < totalLen && g_deviceConnected; offset += chunkSize) {
         size_t sendLen = totalLen - offset;
         if (sendLen > chunkSize) sendLen = chunkSize;
@@ -2208,6 +2218,9 @@ void sendBleChunks(NimBLECharacteristic* pChar, const uint8_t* data, size_t tota
         if (offset + sendLen < totalLen) {
             delay(delayMs);
         }
+    }
+    if (s_bleTxMutex) {
+        xSemaphoreGive(s_bleTxMutex);
     }
 }
 
@@ -2306,40 +2319,38 @@ void buildJkDeviceInfoFrame(uint8_t* frame) {
     strncpy((char*)&frame[6], model.c_str(), 16);
 
     // Hardware version (bytes 22..29, 8 chars)
-    strncpy((char*)&frame[22], "11.XW", 8);
+    strncpy((char*)&frame[22], "10.XG", 8);
 
     // Software version (bytes 30..37, 8 chars)
-    strncpy((char*)&frame[30], "11.28", 8);
+    strncpy((char*)&frame[30], "10.07", 8);
 
     // Uptime in seconds (bytes 38..41, uint32 LE)
     uint32_t uptime = millis() / 1000;
-    frame[38] = uptime & 0xFF;
-    frame[39] = (uptime >> 8) & 0xFF;
-    frame[40] = (uptime >> 16) & 0xFF;
-    frame[41] = (uptime >> 24) & 0xFF;
+    memcpy(&frame[38], &uptime, 4);
 
     // Power on count (bytes 42..45, uint32 LE)
-    frame[42] = 1;
+    uint32_t pwrOn = 1;
+    memcpy(&frame[42], &pwrOn, 4);
 
     // Device name (bytes 46..61, 16 chars)
     strncpy((char*)&frame[46], model.c_str(), 16);
 
-    // Device passcode (bytes 62..77, 16 chars)
+    // Device passcode (bytes 62..77, 16 chars) -> "1234"
     strncpy((char*)&frame[62], "1234", 16);
 
-    // Manufacturing date (bytes 78..83, YYMMDD)
-    strncpy((char*)&frame[78], "240510", 6);
+    // Manufacturing date (bytes 78..83, YYMMDD) -> "220511"
+    strncpy((char*)&frame[78], "220511", 6);
 
-    // Serial number (bytes 86..96, 11 chars)
-    strncpy((char*)&frame[86], "2405101001", 11);
+    // Serial number (bytes 86..96, 11 chars) -> "2041803028"
+    strncpy((char*)&frame[86], "2041803028", 11);
 
-    // Passcode (bytes 97..101, 5 chars)
-    strncpy((char*)&frame[97], "0000", 5);
+    // Passcode (bytes 97..101, 5 chars) -> "1234"
+    strncpy((char*)&frame[97], "1234", 5);
 
     // User data (bytes 102..117, 16 chars)
     strncpy((char*)&frame[102], "Input Userdata", 16);
 
-    // Setup passcode (bytes 118..133, 16 chars)
+    // Setup passcode (bytes 118..133, 16 chars) -> "123456"
     strncpy((char*)&frame[118], "123456", 16);
 
     // Checksum at byte 299
@@ -2438,49 +2449,117 @@ void buildJkCellInfoFrame(uint8_t* frame) {
     frame[4] = 0x02; // Frame Type: Cell Info
     frame[5] = s_cellCounter++;
 
-    // Cell voltages 1..32 (bytes 6 + i*2: Little-Endian uint16 in mV)
-    for (uint8_t i = 0; i < 32; ++i) {
+    // Cell voltages 1..24 (bytes 6 + i*2: Little-Endian uint16 in mV)
+    uint32_t totalMv = 0;
+    uint16_t minMv = 0xFFFF;
+    uint16_t maxMv = 0;
+    uint8_t minCellIdx = 0;
+    uint8_t maxCellIdx = 0;
+
+    for (uint8_t i = 0; i < 24; ++i) {
         uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0;
         frame[6 + i * 2]     = mv & 0xFF;
         frame[6 + i * 2 + 1] = (mv >> 8) & 0xFF;
+        if (i < g_bms.cell_count) {
+            totalMv += mv;
+            if (mv < minMv) { minMv = mv; minCellIdx = i; }
+            if (mv > maxMv) { maxMv = mv; maxCellIdx = i; }
+        }
+    }
+    if (minMv == 0xFFFF) minMv = 0;
+
+    // Enabled cells bitmask (bytes 54..57: uint32 LE)
+    // 0x000000FF for 8 cells enabled! Enables cell display in official JKBMS app.
+    uint32_t cellMask = 0;
+    for (uint8_t i = 0; i < g_bms.cell_count && i < 24; ++i) {
+        cellMask |= (1UL << i);
+    }
+    memcpy(&frame[54], &cellMask, 4);
+
+    // Average cell voltage (bytes 58..59: uint16 LE in mV)
+    uint16_t avgMv = (g_bms.cell_count > 0) ? (uint16_t)(totalMv / g_bms.cell_count) : 0;
+    frame[58] = avgMv & 0xFF;
+    frame[59] = (avgMv >> 8) & 0xFF;
+
+    // Delta cell voltage (bytes 60..61: uint16 LE in mV)
+    uint16_t deltaMv = (maxMv >= minMv) ? (maxMv - minMv) : 0;
+    frame[60] = deltaMv & 0xFF;
+    frame[61] = (deltaMv >> 8) & 0xFF;
+
+    // Max voltage cell index (byte 62: 0-based index)
+    frame[62] = maxCellIdx;
+
+    // Min voltage cell index (byte 63: 0-based index)
+    frame[63] = minCellIdx;
+
+    // Cell wire resistances 1..24 (bytes 64 + i*2: Little-Endian uint16 in mOhm)
+    for (uint8_t i = 0; i < 24; ++i) {
+        uint16_t res = (i < g_bms.cell_count) ? 100 : 0; // 100 mOhm = 0.100 Ohm
+        frame[64 + i * 2]     = res & 0xFF;
+        frame[64 + i * 2 + 1] = (res >> 8) & 0xFF;
     }
 
-    // Cell resistances 1..32 (bytes 70 + i*2: Little-Endian uint16, ~0.3 mOhm)
-    for (uint8_t i = 0; i < 32; ++i) {
-        uint16_t res = (i < g_bms.cell_count) ? 300 : 0;
-        frame[70 + i * 2]     = res & 0xFF;
-        frame[70 + i * 2 + 1] = (res >> 8) & 0xFF;
-    }
+    // Bytes 114..117: Wire warning bitmask (0)
 
-    // Total Voltage (bytes 134..137: uint32 Little-Endian in mV)
-    uint32_t totalMv = 0;
-    for (uint8_t i = 0; i < g_bms.cell_count && i < 32; ++i) totalMv += g_bms.cell_mv[i];
-    memcpy(&frame[134], &totalMv, 4);
+    // Total Battery Voltage (bytes 118..121: uint32 LE in mV)
+    memcpy(&frame[118], &totalMv, 4);
 
-    // Current (bytes 138..141: signed int32 Little-Endian in mA, + = Charge, - = Discharge)
+    // Battery power in mW (bytes 122..125: uint32 LE)
     int32_t curMa = (int32_t)g_bms.current_10ma * 10;
-    memcpy(&frame[138], &curMa, 4);
+    uint32_t powerMw = (uint32_t)(abs(curMa) * (totalMv / 1000.0f));
+    memcpy(&frame[122], &powerMw, 4);
 
-    // Capacity remaining in mAh (142..145)
+    // Charge/Discharge current (bytes 126..129: signed int32 LE in mA, + = Charge, - = Discharge)
+    memcpy(&frame[126], &curMa, 4);
+
+    // Temperature sensor 1 (bytes 130..131: int16 LE in 0.1 °C)
+    int16_t t1 = (int16_t)(g_bms.ntc1_temp_01k - 2731);
+    frame[130] = t1 & 0xFF;
+    frame[131] = (t1 >> 8) & 0xFF;
+
+    // Temperature sensor 2 (bytes 132..133: int16 LE in 0.1 °C)
+    int16_t t2 = (int16_t)(g_bms.ntc2_temp_01k - 2731);
+    frame[132] = t2 & 0xFF;
+    frame[133] = (t2 >> 8) & 0xFF;
+
+    // MOS Temperature (bytes 134..135: int16 LE in 0.1 °C)
+    int16_t tMos = (int16_t)(g_bms.ntc3_temp_01k - 2731);
+    frame[134] = tMos & 0xFF;
+    frame[135] = (tMos >> 8) & 0xFF;
+
+    // Errors bitmask (bytes 136..137: uint16 LE, 0)
+
+    // Balancing current (bytes 138..139: int16 LE in mA, 0)
+    int16_t balCurMa = (g_bms.balance_low > 0) ? 1000 : 0;
+    frame[138] = balCurMa & 0xFF;
+    frame[139] = (balCurMa >> 8) & 0xFF;
+
+    // Balancing action (byte 140: 0 = Off, 1 = Charging balancer, 2 = Discharging balancer)
+    frame[140] = (g_bms.balance_low > 0) ? 1 : 0;
+
+    // State of charge (byte 141: uint8 in 1.0 %)
+    frame[141] = g_bms.soc_percent;
+
+    // Capacity remaining in mAh (bytes 142..145: uint32 LE)
     uint32_t remMah = (uint32_t)g_bms.remain_cap_10mah * 10;
     memcpy(&frame[142], &remMah, 4);
 
-    // Capacity nominal in mAh (146..149)
+    // Capacity nominal in mAh (bytes 146..149: uint32 LE)
     uint32_t nomMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
     memcpy(&frame[146], &nomMah, 4);
 
-    // Cycle count (150..153)
+    // Cycle count (bytes 150..153: uint32 LE)
     uint32_t cycles = g_bms.cycle_count;
     memcpy(&frame[150], &cycles, 4);
 
-    // Cycle capacity in mAh (154..157)
+    // Cycle capacity in mAh (bytes 154..157: uint32 LE)
     uint32_t cycleMah = (uint32_t)g_bms.cycle_cap_10mah * 10;
     memcpy(&frame[154], &cycleMah, 4);
 
     // SOH (%)
     frame[158] = 100;
 
-    // Total runtime in seconds (162..165)
+    // Total runtime in seconds (bytes 162..165: uint32 LE)
     uint32_t uptime = millis() / 1000;
     memcpy(&frame[162], &uptime, 4);
 
@@ -2490,23 +2569,10 @@ void buildJkCellInfoFrame(uint8_t* frame) {
     frame[168] = 0; // Precharge
     frame[169] = 1; // Balancer working
 
-    // Battery pack voltage in 0.01V (202..203)
+    // Battery pack voltage in 0.01V (bytes 202..203: uint16 LE)
     uint16_t pack001v = (uint16_t)(totalMv / 10);
     frame[202] = pack001v & 0xFF;
     frame[203] = (pack001v >> 8) & 0xFF;
-
-    // Temperatures in 0.1°C (222..227)
-    int16_t tMos = (int16_t)(g_bms.ntc3_temp_01k - 2731);
-    frame[222] = tMos & 0xFF;
-    frame[223] = (tMos >> 8) & 0xFF;
-
-    int16_t t2 = (int16_t)(g_bms.ntc2_temp_01k - 2731);
-    frame[224] = t2 & 0xFF;
-    frame[225] = (t2 >> 8) & 0xFF;
-
-    int16_t t1 = (int16_t)(g_bms.ntc1_temp_01k - 2731);
-    frame[226] = t1 & 0xFF;
-    frame[227] = (t1 >> 8) & 0xFF;
 
     // Checksum (byte 299: sum of bytes 0..298)
     uint8_t crc = 0;
