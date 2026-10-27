@@ -221,10 +221,17 @@ void checkBootButtonAtPowerOn() {
 }
 
 void initDoubleResetAndMode() {
+    esp_reset_reason_t reason = esp_reset_reason();
+
     s_prefs.begin("bms_emu", false);
     bool doubleReset = s_prefs.getBool("dr_flag", false);
     uint8_t savedProto = s_prefs.getUChar("proto", PROTO_JBD);
     if (savedProto > PROTO_JK) savedProto = PROTO_JBD;
+
+    // Software restart or serial port open must never trigger an unintended protocol cycle
+    if (reason == ESP_RST_SW) {
+        doubleReset = false;
+    }
 
     if (doubleReset) {
         savedProto = (savedProto + 1) % 4;
@@ -235,8 +242,14 @@ void initDoubleResetAndMode() {
                       getProtoName((EmulatorProtocol)savedProto));
         Serial.printf("=======================================================\n\n");
     } else {
-        s_prefs.putBool("dr_flag", true);
-        g_doubleResetPending = true;
+        // Only arm double-reset window on genuine hardware power-on or external reset
+        if (reason == ESP_RST_POWERON || reason == ESP_RST_EXT) {
+            s_prefs.putBool("dr_flag", true);
+            g_doubleResetPending = true;
+        } else {
+            s_prefs.putBool("dr_flag", false);
+            g_doubleResetPending = false;
+        }
     }
 
     g_proto = (EmulatorProtocol)savedProto;
@@ -317,28 +330,24 @@ int findStoredMacIndex(const uint8_t* mac) {
 }
 
 void setEmulatorMode(EmulatorProtocol p) {
-    if (g_proto == p) return;
     s_prefs.begin("bms_emu", false);
     s_prefs.putUChar("proto", (uint8_t)p);
     s_prefs.putBool("dr_flag", false);
 
-    bool isDefaultMac = (memcmp(g_activeBtMac, TARGET_BT_MAC, 6) == 0 ||
-                         memcmp(g_activeBtMac, DALY_BT_MAC, 6) == 0 ||
-                         memcmp(g_activeBtMac, ANT_BT_MAC, 6) == 0 ||
-                         memcmp(g_activeBtMac, JK_BT_MAC, 6) == 0);
-    if (isDefaultMac) {
-        const uint8_t* nextMac = TARGET_BT_MAC;
-        if (p == PROTO_DALY) nextMac = DALY_BT_MAC;
-        else if (p == PROTO_ANT) nextMac = ANT_BT_MAC;
-        else if (p == PROTO_JK) nextMac = JK_BT_MAC;
-        memcpy(g_activeBtMac, nextMac, 6);
-        s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
-        int idx = findStoredMacIndex(g_activeBtMac);
-        s_prefs.putChar("mac_act", (int8_t)idx);
-    }
+    // Always assign protocol-specific dedicated default Bluetooth MAC address
+    // to prevent mobile OS GATT caching collisions between different BMS profiles
+    const uint8_t* nextMac = TARGET_BT_MAC;
+    if (p == PROTO_DALY) nextMac = DALY_BT_MAC;
+    else if (p == PROTO_ANT) nextMac = ANT_BT_MAC;
+    else if (p == PROTO_JK) nextMac = JK_BT_MAC;
+    memcpy(g_activeBtMac, nextMac, 6);
+    s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+    int idx = findStoredMacIndex(g_activeBtMac);
+    s_prefs.putChar("mac_act", (int8_t)idx);
     s_prefs.end();
 
-    Serial.printf("\n[SYSTEM] Mode set to %s -> Restarting...\n", getProtoName(p));
+    Serial.printf("\n[SYSTEM] Mode set to %s (MAC: %s) -> Restarting...\n", 
+                  getProtoName(p), formatMacAddress(g_activeBtMac).c_str());
     for (int i = 0; i < 3; ++i) {
         if (p == PROTO_DALY) setRgbLed(60, 0, 60);
         else if (p == PROTO_ANT) setRgbLed(0, 0, 60);
@@ -710,6 +719,7 @@ uint16_t calculateJbdCRC(const uint8_t* data, size_t len) {
 
 static NimBLECharacteristic* s_lastJbdTargetNotifyChar = nullptr;
 static NimBLECharacteristic* s_lastDalyTargetNotifyChar = nullptr;
+static NimBLECharacteristic* s_lastAntTargetNotifyChar = nullptr;
 static uint16_t s_lastDalyReadCount = 0;
 
 // ============================================================================
@@ -727,6 +737,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         g_deviceConnected = false;
         s_lastJbdTargetNotifyChar = nullptr;
         s_lastDalyTargetNotifyChar = nullptr;
+        s_lastAntTargetNotifyChar = nullptr;
         s_lastDalyReadCount = 0;
         updateStatusLed();
         Serial.printf("[BLE] Client disconnected (reason: %d). Restarting advertising...\n", reason);
@@ -2186,18 +2197,38 @@ void buildAntTelemetryFrame(uint8_t* frame) {
     frame[139] = checksum & 0xFF;
 }
 
+// Generic helper: Send BLE notification in standard 20-byte chunks matching genuine BLE hardware (MTU=23)
+// Required for reliable transmission of large frames (Ant 140B, JK 300B) to iOS and Android apps
+void sendBleChunks(NimBLECharacteristic* pChar, const uint8_t* data, size_t totalLen, size_t chunkSize = 20, uint32_t delayMs = 15) {
+    if (!g_deviceConnected || !pChar) return;
+    for (size_t offset = 0; offset < totalLen && g_deviceConnected; offset += chunkSize) {
+        size_t sendLen = totalLen - offset;
+        if (sendLen > chunkSize) sendLen = chunkSize;
+        pChar->notify(&data[offset], sendLen);
+        if (offset + sendLen < totalLen) {
+            delay(delayMs);
+        }
+    }
+}
+
 void sendAntTelemetry() {
     if (!g_deviceConnected) return;
     uint8_t frame[140];
     buildAntTelemetryFrame(frame);
-    if (pAntNotifyChar) pAntNotifyChar->notify(frame, sizeof(frame));
-    if (pAntNusTx) pAntNusTx->notify(frame, sizeof(frame));
+    NimBLECharacteristic* target = s_lastAntTargetNotifyChar;
+    if (!target) {
+        target = pAntNotifyChar ? pAntNotifyChar : pAntNusTx;
+    }
+    if (target) {
+        sendBleChunks(target, frame, sizeof(frame), 20, 15);
+    }
 }
 
 class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
     void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
         Serial.printf("[ANT BLE] Subscribed to %s (subValue=%d)\n", pCharacteristic->getUUID().toString().c_str(), subValue);
         if (subValue > 0) {
+            s_lastAntTargetNotifyChar = pCharacteristic;
             sendAntTelemetry();
         }
     }
@@ -2214,6 +2245,13 @@ class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
         if (val.empty()) return;
         const uint8_t* data = (const uint8_t*)val.data();
         size_t len = val.length();
+
+        // Update target notify characteristic based on active write channel
+        if (pCharacteristic == pAntNusRx && pAntNusTx) {
+            s_lastAntTargetNotifyChar = pAntNusTx;
+        } else if (pAntNotifyChar) {
+            s_lastAntTargetNotifyChar = pAntNotifyChar;
+        }
 
         Serial.printf("[ANT BLE] onWrite len=%d: ", len);
         for (size_t i = 0; i < len && i < 16; ++i) Serial.printf("%02X ", data[i]);
@@ -2480,21 +2518,24 @@ void sendJkDeviceInfo() {
     if (!g_deviceConnected || !pJkNotifyChar) return;
     uint8_t frame[300];
     buildJkDeviceInfoFrame(frame);
-    pJkNotifyChar->notify(frame, sizeof(frame));
+    sendBleChunks(pJkNotifyChar, frame, sizeof(frame), 20, 15);
+    Serial.println("[JK TX] Sent Device Info (Frame 0x03, 300B in 15 chunks)");
 }
 
 void sendJkCellInfo() {
     if (!g_deviceConnected || !pJkNotifyChar) return;
     uint8_t frame[300];
     buildJkCellInfoFrame(frame);
-    pJkNotifyChar->notify(frame, sizeof(frame));
+    sendBleChunks(pJkNotifyChar, frame, sizeof(frame), 20, 15);
+    Serial.println("[JK TX] Sent Cell Info (Frame 0x02, 300B in 15 chunks)");
 }
 
 void sendJkSettings() {
     if (!g_deviceConnected || !pJkNotifyChar) return;
     uint8_t frame[300];
     buildJkSettingsFrame(frame);
-    pJkNotifyChar->notify(frame, sizeof(frame));
+    sendBleChunks(pJkNotifyChar, frame, sizeof(frame), 20, 15);
+    Serial.println("[JK TX] Sent Settings (Frame 0x01, 300B in 15 chunks)");
 }
 
 class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
@@ -2502,10 +2543,10 @@ class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
         Serial.printf("[JK BLE] Subscribed to %s (subValue=%d)\n", pCharacteristic->getUUID().toString().c_str(), subValue);
         if (subValue > 0) {
             sendJkDeviceInfo();
-            delay(40);
-            sendJkCellInfo();
-            delay(40);
+            delay(50);
             sendJkSettings();
+            delay(50);
+            sendJkCellInfo();
         }
     }
 
@@ -2522,26 +2563,37 @@ class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
         const uint8_t* data = (const uint8_t*)val.data();
         size_t len = val.length();
 
-        Serial.printf("[JK BLE] onWrite len=%d: ", len);
+        Serial.printf("[JK BLE RX <- Client] len=%d: ", len);
         for (size_t i = 0; i < len && i < 16; ++i) Serial.printf("%02X ", data[i]);
         Serial.println();
 
         if (len >= 5 && data[0] == 0xAA && data[1] == 0x55 && data[2] == 0x90 && data[3] == 0xEB) {
             uint8_t cmd = data[4];
             if (cmd == 0x96) {
+                // Command 0x96: Settings & Cell Telemetry request
+                Serial.println("[JK CMD] 0x96 Settings & Cell Info Query");
+                sendJkSettings();
+                delay(50);
                 sendJkCellInfo();
                 return;
             } else if (cmd == 0x97) {
+                // Command 0x97: Device Info request
+                Serial.println("[JK CMD] 0x97 Device Info Query");
                 sendJkDeviceInfo();
                 return;
             } else if (cmd == 0x01) {
+                Serial.println("[JK CMD] 0x01 Settings Query");
                 sendJkSettings();
+                return;
+            } else if (cmd == 0x02) {
+                Serial.println("[JK CMD] 0x02 Cell Info Query");
+                sendJkCellInfo();
                 return;
             } else if (cmd == 0x1D) {
                 uint8_t st = (len >= 7) ? data[6] : 1;
                 if (st) g_bms.fet_status |= 0x01;
                 else g_bms.fet_status &= ~0x01;
-                Serial.printf("[JK] Charge MOS -> %s\n", st ? "ON" : "OFF");
+                Serial.printf("[JK CMD] Charge MOS -> %s\n", st ? "ON" : "OFF");
                 updateStatusLed();
                 sendJkCellInfo();
                 return;
@@ -2549,20 +2601,23 @@ class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
                 uint8_t st = (len >= 7) ? data[6] : 1;
                 if (st) g_bms.fet_status |= 0x02;
                 else g_bms.fet_status &= ~0x02;
-                Serial.printf("[JK] Discharge MOS -> %s\n", st ? "ON" : "OFF");
+                Serial.printf("[JK CMD] Discharge MOS -> %s\n", st ? "ON" : "OFF");
                 updateStatusLed();
                 sendJkCellInfo();
                 return;
             } else if (cmd == 0x1F) {
-                Serial.println("[JK] Balancer Switch toggled");
+                Serial.println("[JK CMD] Balancer Switch toggled");
                 updateStatusLed();
                 sendJkCellInfo();
                 return;
             }
         }
 
+        // Generic query fallback
         sendJkDeviceInfo();
-        delay(30);
+        delay(50);
+        sendJkSettings();
+        delay(50);
         sendJkCellInfo();
     }
 };
