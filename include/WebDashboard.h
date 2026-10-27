@@ -214,6 +214,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <div class="header-right">
         <div class="badge"><span id="live-dot" class="dot online"></span> <span id="live-text">ONLINE</span></div>
         <span id="cells-badge" class="badge badge-cells">8S (24V)</span>
+        <span id="mac-badge" class="badge" style="font-family:monospace; color:var(--accent-cyan); border-color:rgba(57,197,187,0.35); font-weight:700;">MAC: ...</span>
         <button id="lang-btn" class="btn" onclick="toggleLang()">🇬🇧 EN</button>
         <a href="/setup" class="btn">⚙️ <span data-i18n="settings">Налаштування</span></a>
       </div>
@@ -314,6 +315,23 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <span id="soc-slider-val" class="slider-val">96%</span>
           </div>
         </div>
+
+        <!-- BLE Adapter MAC Address Selector -->
+        <div class="control-group">
+          <div class="control-label">
+            <span data-i18n="mac_management">📡 BLE MAC-адреса адаптера</span>
+            <span id="label-active-mac" style="font-family:monospace; color:var(--accent-cyan); font-weight:700;">...</span>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="select-mac-profile" style="flex:1; background:#161b22; color:#fff; border:1px solid rgba(255,255,255,0.15); border-radius:6px; padding:7px; font-weight:600; font-family:monospace; font-size:0.85rem;">
+            </select>
+            <button class="btn btn-active" onclick="switchMacFromSelect()" style="padding:7px 12px; white-space:nowrap;" data-i18n="apply_btn">⚡ Застосувати</button>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:var(--text-mut);">
+            <span data-i18n="mac_hint">Перезавантажує ESP32 із вибраним MAC</span>
+            <a href="/setup" style="color:var(--accent-blue); text-decoration:none;" data-i18n="manage_mac">Всі налаштування ⚙️</a>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -358,7 +376,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         dsg_mos: "Discharge MOSFET (Розряд):",
         cell_matrix: "Напруги комірок акумулятора",
         delta: "Дельта розбалансу",
-        cell: "Комірка"
+        cell: "Комірка",
+        mac_management: "📡 BLE MAC-адреса адаптера",
+        apply_btn: "⚡ Застосувати",
+        mac_hint: "Перезавантажує ESP32 із вибраним MAC",
+        manage_mac: "Всі налаштування ⚙️"
       },
       en: {
         settings: "Settings",
@@ -379,7 +401,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         dsg_mos: "Discharge MOSFET:",
         cell_matrix: "Individual Cell Voltages",
         delta: "Cell Delta",
-        cell: "Cell"
+        cell: "Cell",
+        mac_management: "📡 BLE Adapter MAC Address",
+        apply_btn: "⚡ Apply",
+        mac_hint: "Reboots ESP32 with selected MAC",
+        manage_mac: "All Settings ⚙️"
       }
     };
 
@@ -492,6 +518,30 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const m = Math.floor(d.uptime_sec / 60);
       const h = Math.floor(m / 60);
       document.getElementById('sys-uptime').textContent = `${h}h ${m % 60}m`;
+
+      // MAC Address & Profiles
+      if (d.mac_active) {
+        const mb = document.getElementById('mac-badge');
+        if (mb) mb.textContent = 'MAC: ' + d.mac_active;
+        const ml = document.getElementById('label-active-mac');
+        if (ml) ml.textContent = d.mac_active;
+
+        const selMac = document.getElementById('select-mac-profile');
+        if (selMac && d.mac_profiles) {
+          const profHash = JSON.stringify(d.mac_profiles);
+          if (selMac.dataset.hash !== profHash) {
+            selMac.innerHTML = '';
+            d.mac_profiles.forEach(p => {
+              const opt = document.createElement('option');
+              opt.value = p.index;
+              opt.textContent = `[${p.index + 1}] ${p.label} (${p.mac})` + (p.active ? ' ★' : '');
+              if (p.active) opt.selected = true;
+              selMac.appendChild(opt);
+            });
+            selMac.dataset.hash = profHash;
+          }
+        }
+      }
     }
 
     function renderCellsGrid(d) {
@@ -570,6 +620,26 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         body: JSON.stringify({ soc: parseInt(socVal) })
       });
       setTimeout(() => { isUpdating = false; fetchData(); }, 500);
+    }
+
+    async function switchMacFromSelect() {
+      const selMac = document.getElementById('select-mac-profile');
+      const idx = parseInt(selMac.value);
+      if (isNaN(idx)) return;
+      const text = selMac.options[selMac.selectedIndex].text;
+      const msg = (curLang === 'uk') ? `Перемкнути MAC на ${text} та перезавантажити емулятор?` : `Switch MAC to ${text} and reboot emulator?`;
+      if (!confirm(msg)) return;
+      try {
+        await fetch('/api/mac/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: idx })
+        });
+        alert(curLang === 'uk' ? 'MAC змінено! Емулятор перезавантажується...' : 'MAC updated! Emulator is rebooting...');
+        setTimeout(() => { location.reload(); }, 3500);
+      } catch (e) {
+        alert('Помилка перемикання MAC!');
+      }
     }
 
     applyLang();
@@ -665,6 +735,37 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
       <button class="btn" style="flex:1;" onclick="restartDevice()">🔄 Перезавантажити</button>
     </div>
 
+    <!-- BLE MAC Address Management Section -->
+    <div class="ota-section">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+        <label style="font-size:1.05rem; font-weight:700;">📡 BLE MAC-адреса адаптера:</label>
+        <span id="cur-mac-badge" style="background:rgba(88,166,255,0.2); color:var(--accent); padding:4px 10px; border-radius:12px; font-family:monospace; font-size:0.85rem; font-weight:700;">...</span>
+      </div>
+      <p class="sub" style="margin-bottom:14px;">Керування апаратним MAC-адресом для зв'язку з додатками JBD / Xiaoxiang / Daly. Виберіть збережений або введіть власний.</p>
+
+      <label style="margin-bottom:8px;">Збережені профілі MAC:</label>
+      <div id="mac-profiles-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:14px;">
+        <div style="color:var(--text-mut); font-size:0.85rem;">Завантаження...</div>
+      </div>
+
+      <!-- Add or Set custom MAC -->
+      <div style="background:#0b0f14; border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:14px; margin-bottom:12px;">
+        <div style="font-size:0.85rem; font-weight:600; margin-bottom:10px;">➕ Ввести власну MAC-адресу:</div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <input type="text" id="custom-mac-addr" placeholder="Наприклад: A5:C2:37:2D:5C:A9" maxlength="17" style="font-family:monospace; font-weight:600; text-transform:uppercase;">
+          <input type="text" id="custom-mac-label" placeholder="Назва профілю (наприклад: Мій адаптер)">
+          <div style="display:flex; gap:8px; margin-top:4px;">
+            <button type="button" class="btn btn-primary" onclick="applyCustomMac(true)" style="flex:1; margin-top:0;">⚡ Застосувати та Reboot</button>
+            <button type="button" class="btn" onclick="applyCustomMac(false)" style="flex:1;">💾 Додати в список</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end;">
+        <button type="button" class="btn" onclick="resetMacDefaults()" style="font-size:0.75rem; color:var(--text-mut); padding:6px 10px;">🔄 Відновити фабричні профілі</button>
+      </div>
+    </div>
+
     <!-- OTA Firmware Update -->
     <div class="ota-section">
       <label>📦 Оновлення прошивки по повітрю (OTA Update):</label>
@@ -732,6 +833,109 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
       alert('Перезавантаження...');
       setTimeout(() => { window.location.href = '/'; }, 3000);
     }
+
+    async function loadMacProfiles() {
+      try {
+        const res = await fetch('/api/mac');
+        const data = await res.json();
+        const badge = document.getElementById('cur-mac-badge');
+        if (badge) badge.textContent = data.active_mac;
+        const listEl = document.getElementById('mac-profiles-list');
+        listEl.innerHTML = '';
+        (data.profiles || []).forEach(p => {
+          const div = document.createElement('div');
+          div.style = 'background:rgba(255,255,255,0.03); border:1px solid ' + (p.active ? 'var(--accent)' : 'rgba(255,255,255,0.08)') + '; border-radius:8px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;';
+          div.innerHTML = `
+            <div style="display:flex; flex-direction:column; gap:2px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-weight:700; font-size:0.9rem;">${p.label}</span>
+                ${p.active ? '<span style="font-size:0.7rem; background:rgba(63,185,80,0.2); color:var(--green); padding:2px 6px; border-radius:10px; font-weight:700;">АКТИВНИЙ</span>' : ''}
+              </div>
+              <span style="font-family:monospace; font-size:0.85rem; color:var(--text-mut);">${p.mac}</span>
+            </div>
+            <div style="display:flex; gap:6px;">
+              ${!p.active ? `<button class="btn" style="padding:6px 10px; font-size:0.8rem; background:rgba(88,166,255,0.15); border-color:var(--accent); color:var(--accent);" onclick="selectMacProfile(${p.index}, '${p.mac}')">⚡ Вибрати</button>` : ''}
+              ${data.profiles.length > 1 ? `<button class="btn btn-danger" style="padding:6px 10px; font-size:0.8rem;" onclick="deleteMacProfile(${p.index}, '${p.label}')">🗑️</button>` : ''}
+            </div>
+          `;
+          listEl.appendChild(div);
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function selectMacProfile(idx, mac) {
+      if (!confirm(`Перемкнути MAC-адресу на ${mac} та перезавантажити емулятор?`)) return;
+      try {
+        await fetch('/api/mac/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: idx })
+        });
+        alert(`MAC-адресу перемкнуто на ${mac}! Емулятор перезавантажується...`);
+        setTimeout(() => { window.location.href = '/'; }, 3000);
+      } catch (err) { alert('Помилка перемикання!'); }
+    }
+
+    async function applyCustomMac(rebootNow) {
+      const macInput = document.getElementById('custom-mac-addr');
+      const labelInput = document.getElementById('custom-mac-label');
+      const mac = macInput.value.trim().toUpperCase();
+      const label = labelInput.value.trim();
+      const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+      if (!macRegex.test(mac)) {
+        alert('Некоректний формат MAC-адреси! Приклад: A5:C2:37:2D:5C:A9');
+        return;
+      }
+      if (rebootNow) {
+        if (!confirm(`Встановити активний MAC ${mac} та перезавантажити?`)) return;
+        try {
+          await fetch('/api/mac/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mac, label })
+          });
+          alert('Новий MAC встановлено! Перезавантаження...');
+          setTimeout(() => { window.location.href = '/'; }, 3000);
+        } catch (e) { alert('Помилка збереження!'); }
+      } else {
+        try {
+          await fetch('/api/mac/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mac, label })
+          });
+          macInput.value = '';
+          labelInput.value = '';
+          loadMacProfiles();
+          alert('Профіль успішно додано до списку!');
+        } catch (e) { alert('Помилка додавання!'); }
+      }
+    }
+
+    async function deleteMacProfile(idx, label) {
+      if (!confirm(`Видалити профіль "${label}"?`)) return;
+      try {
+        await fetch('/api/mac/del', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: idx })
+        });
+        loadMacProfiles();
+      } catch (e) { alert('Помилка видалення!'); }
+    }
+
+    async function resetMacDefaults() {
+      if (!confirm('Скинути всі збережені профілі MAC до початкових за замовчуванням?')) return;
+      try {
+        await fetch('/api/mac/reset', { method: 'POST' });
+        loadMacProfiles();
+        alert('Список профілів відновлено до фабричних значень.');
+      } catch (e) { alert('Помилка скидання!'); }
+    }
+
+    loadMacProfiles();
   </script>
 </body>
 </html>

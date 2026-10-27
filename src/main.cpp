@@ -2067,6 +2067,17 @@ void setupWebServerRoutes() {
         doc["rssi"] = g_isApMode ? 0 : WiFi.RSSI();
         doc["free_heap"] = ESP.getFreeHeap();
         doc["uptime_sec"] = millis() / 1000;
+        doc["mac_active"] = formatMacAddress(g_activeBtMac);
+        doc["mac_active_index"] = g_activeMacIndex;
+
+        JsonArray macArr = doc["mac_profiles"].to<JsonArray>();
+        for (uint8_t i = 0; i < g_storedMacCount; i++) {
+            JsonObject m = macArr.add<JsonObject>();
+            m["index"] = i;
+            m["mac"] = formatMacAddress(g_storedMacs[i].mac);
+            m["label"] = g_storedMacs[i].label;
+            m["active"] = (i == g_activeMacIndex);
+        }
 
         String out;
         serializeJson(doc, out);
@@ -2193,6 +2204,142 @@ void setupWebServerRoutes() {
         g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
         delay(500);
         esp_restart();
+    });
+
+    // API: Get BLE Adapter MAC Info & Profiles
+    g_httpServer.on("/api/mac", HTTP_GET, []() {
+        JsonDocument doc;
+        doc["active_mac"] = formatMacAddress(g_activeBtMac);
+        doc["active_index"] = g_activeMacIndex;
+        doc["count"] = g_storedMacCount;
+        doc["max"] = MAX_STORED_MACS;
+        JsonArray arr = doc["profiles"].to<JsonArray>();
+        for (uint8_t i = 0; i < g_storedMacCount; i++) {
+            JsonObject item = arr.add<JsonObject>();
+            item["index"] = i;
+            item["mac"] = formatMacAddress(g_storedMacs[i].mac);
+            item["label"] = g_storedMacs[i].label;
+            item["active"] = (i == g_activeMacIndex);
+        }
+        String out;
+        serializeJson(doc, out);
+        g_httpServer.send(200, "application/json", out);
+    });
+
+    // API: Select MAC Profile and Reboot
+    g_httpServer.on("/api/mac/select", HTTP_POST, []() {
+        int idx = -1;
+        if (g_httpServer.hasArg("plain")) {
+            JsonDocument doc;
+            deserializeJson(doc, g_httpServer.arg("plain"));
+            idx = doc["index"] | -1;
+        } else if (g_httpServer.hasArg("index")) {
+            idx = g_httpServer.arg("index").toInt();
+        }
+        if (idx >= 0 && idx < g_storedMacCount) {
+            g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+            delay(300);
+            applyAndRestartWithMac(g_storedMacs[idx].mac, (int8_t)idx, g_storedMacs[idx].label);
+        } else {
+            g_httpServer.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Invalid index\"}");
+        }
+    });
+
+    // API: Set Custom MAC and Reboot
+    g_httpServer.on("/api/mac/set", HTTP_POST, []() {
+        String macStr = "";
+        String labelStr = "";
+        if (g_httpServer.hasArg("plain")) {
+            JsonDocument doc;
+            deserializeJson(doc, g_httpServer.arg("plain"));
+            macStr = doc["mac"] | "";
+            labelStr = doc["label"] | "";
+        } else {
+            macStr = g_httpServer.arg("mac");
+            labelStr = g_httpServer.arg("label");
+        }
+        uint8_t parsedMac[6];
+        if (parseMacAddress(macStr.c_str(), parsedMac)) {
+            g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+            delay(300);
+            applyAndRestartWithMac(parsedMac, -1, labelStr.length() > 0 ? labelStr.c_str() : "Manual MAC");
+        } else {
+            g_httpServer.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Invalid MAC format\"}");
+        }
+    });
+
+    // API: Add MAC to List Without Immediate Reboot
+    g_httpServer.on("/api/mac/add", HTTP_POST, []() {
+        String macStr = "";
+        String labelStr = "";
+        if (g_httpServer.hasArg("plain")) {
+            JsonDocument doc;
+            deserializeJson(doc, g_httpServer.arg("plain"));
+            macStr = doc["mac"] | "";
+            labelStr = doc["label"] | "";
+        } else {
+            macStr = g_httpServer.arg("mac");
+            labelStr = g_httpServer.arg("label");
+        }
+        uint8_t parsedMac[6];
+        if (!parseMacAddress(macStr.c_str(), parsedMac)) {
+            g_httpServer.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Invalid MAC format\"}");
+            return;
+        }
+        int existing = findStoredMacIndex(parsedMac);
+        if (existing >= 0) {
+            if (labelStr.length() > 0) {
+                strncpy(g_storedMacs[existing].label, labelStr.c_str(), sizeof(g_storedMacs[existing].label) - 1);
+                g_storedMacs[existing].label[sizeof(g_storedMacs[existing].label) - 1] = '\0';
+                saveMacConfigToNvs();
+            }
+        } else {
+            if (g_storedMacCount >= MAX_STORED_MACS) {
+                g_httpServer.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"List full (max 16)\"}");
+                return;
+            }
+            memcpy(g_storedMacs[g_storedMacCount].mac, parsedMac, 6);
+            const char* lbl = (labelStr.length() > 0) ? labelStr.c_str() : "Custom MAC";
+            strncpy(g_storedMacs[g_storedMacCount].label, lbl, sizeof(g_storedMacs[g_storedMacCount].label) - 1);
+            g_storedMacs[g_storedMacCount].label[sizeof(g_storedMacs[g_storedMacCount].label) - 1] = '\0';
+            g_storedMacCount++;
+            saveMacConfigToNvs();
+        }
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+    // API: Delete MAC Profile from List
+    g_httpServer.on("/api/mac/del", HTTP_POST, []() {
+        int idx = -1;
+        if (g_httpServer.hasArg("plain")) {
+            JsonDocument doc;
+            deserializeJson(doc, g_httpServer.arg("plain"));
+            idx = doc["index"] | -1;
+        } else if (g_httpServer.hasArg("index")) {
+            idx = g_httpServer.arg("index").toInt();
+        }
+        if (idx >= 0 && idx < g_storedMacCount && g_storedMacCount > 1) {
+            for (uint8_t i = (uint8_t)idx; i < g_storedMacCount - 1; i++) {
+                g_storedMacs[i] = g_storedMacs[i + 1];
+            }
+            g_storedMacCount--;
+            int actIdx = findStoredMacIndex(g_activeBtMac);
+            g_activeMacIndex = (actIdx >= 0) ? (int8_t)actIdx : -1;
+            saveMacConfigToNvs();
+            g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        } else {
+            g_httpServer.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Cannot delete\"}");
+        }
+    });
+
+    // API: Reset MAC Profiles to Factory Defaults
+    g_httpServer.on("/api/mac/reset", HTTP_POST, []() {
+        s_prefs.begin("bms_emu", false);
+        s_prefs.putUChar("mac_cnt", 0);
+        s_prefs.end();
+        initMacConfig();
+        saveMacConfigToNvs();
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
     });
 
     // OTA Update Form Handler
