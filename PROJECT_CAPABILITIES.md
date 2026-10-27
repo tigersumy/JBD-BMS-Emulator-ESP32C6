@@ -228,7 +228,11 @@ Engineered for the **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscal
 ## 🐜 7. Ant BMS Emulation Specification
 
 * **Device Name**: `ANT-BMS-%02uS` (e.g. `ANT-BMS-08S`, `ANT-BMS-16S`) | **Default MAC**: `A5:C2:3A:26:F2:E1`
-* **GATT Profile**: Service `0xFFE0` (Notify `0xFFE1`, Write `0xFFE2`) and secondary mirror service `0xFFF0` (Notify `0xFFF1`).
+* **GATT Profile**:
+  * Primary Service `0xFFE0` (Read/Write/Notify `0xFFE1`, Write `0xFFE2`).
+  * Secondary Profile `0xFFF0` (Notify `0xFFF1`).
+  * Nordic UART Service `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` (RX `6E400002`, TX `6E400003`).
+  * Device Information Service `0x180A` (Model `0x2A24`, Manufacturer `0x2A29`, Firmware `0x2A26`, Hardware `0x2A27`).
 * **Telemetry Frame Layout (140 Bytes)**:
   * Header: `0xAA 0x55 0xAA 0xFF`
   * Bytes `4..67`: 32 cell voltages (uint16 Big-Endian in mV).
@@ -237,14 +241,22 @@ Engineered for the **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscal
   * Bytes `75..78`: Total capacity in mAh (uint32 Big-Endian).
   * Bytes `79..82`: Remaining capacity in mAh (uint32 Big-Endian).
   * Bytes `83..86`: Cycle capacity in mAh.
-  * Bytes `87..88`: Cycle count.
-  * Bytes `89..90`: Pack voltage in 0.1V.
+  * Bytes `87..90`: Total operating uptime in seconds since boot (uint32 Big-Endian).
   * Bytes `91..96`: NTC temperatures (MOS temp, Sensor 1, Sensor 2 in °C signed int16 Big-Endian).
   * Byte `101` / `102`: Charge & Discharge MOS status ($1=\text{ON}, 0=\text{OFF}$).
-  * Byte `103` / `104` / `105`: Charge, Discharge, and Balancer switches.
+  * Byte `103` / `104` / `105`: Charge MOS (`wMosCharge`), Discharge MOS (`wMosDischarge`), and Balancer (`wBalanced`) switches.
+  * Bytes `111..114`: Instantaneous Power in Watts (`iP`, signed int32 Big-Endian).
+  * Byte `115`: Highest cell index (`iCellMax`, $1\dots 32$).
+  * Bytes `116..117`: Highest cell voltage in mV (`fCellMax`, uint16 Big-Endian).
+  * Byte `118`: Lowest cell index (`iCellMin`, $1\dots 32$).
+  * Bytes `119..120`: Lowest cell voltage in mV (`fCellMin`, uint16 Big-Endian).
+  * Bytes `121..122`: Average cell voltage in mV (`fCellAverage`, uint16 Big-Endian).
+  * Byte `123`: Number of effective batteries/strings (`iBattEff`, e.g. 8 for 8S, 16 for 16S — essential for mobile app rendering).
+  * Bytes `126..129`: Gate drive voltages for Discharge and Charge MOSFETs.
   * Bytes `138..139`: Checksum (uint16 Big-Endian sum of bytes 4..137).
 * **Handshake & Commands**:
-  * Polling trigger: `0xDB 0xDB` or `0x5A 0x5A`.
+  * Polling triggers: `0xDB 0xDB` or `0x5A 0x5A` or `0x7E 0xA1`.
+  * Immediate auto-push burst upon client BLE subscription (`onSubscribe`).
   * Remote FET control: `0xA5 0xA5 <cmd> <state> 0x00 0xAA` (`cmd=0x01` Charge, `cmd=0x02` Discharge, `cmd=0x03` Balancer).
 
 ---
@@ -253,24 +265,36 @@ Engineered for the **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscal
 
 * **Device Name**: `JK-B2A%uS20P` (e.g. `JK-B2A8S20P`, `JK-B2A16S20P`) | **Default MAC**: `A5:C2:3A:26:F2:F1`
 * **GATT Profile**:
-  * Primary Service `0xFFE0` (Notify `0xFFE1`, Write `0xFFE2`).
+  * Primary Service `0xFFE0` (Read/Write/Notify `0xFFE1`, Write `0xFFE2`).
   * Device Information Service `0x180A` (Model `0x2A24`, Manufacturer `0x2A29`, Firmware `0x2A26`, Hardware `0x2A27`).
-* **Live CellInfo Frame Layout (300 Bytes)**:
-  * Header: `0x55 0xAA 0xEB 0x90 0x02`
-  * Bytes `6..69`: 32 cell voltages (uint16 Little-Endian in mV).
-  * Bytes `118..121`: Total pack voltage (uint32 Little-Endian in mV).
-  * Bytes `126..129`: Current (signed int32 Little-Endian in mA, positive = charge, negative = discharge).
-  * Bytes `130..135`: NTC1, NTC2, MOS temperatures (int16 Little-Endian in 0.1°C).
-  * Bytes `138..140`: Balancing current (mA) and balancer state.
-  * Byte `141`: Battery SOC ($0\dots 100\%$).
-  * Bytes `142..149`: Remaining and nominal capacity in mAh (uint32 Little-Endian).
-  * Bytes `150..153`: Cycle count (uint32 Little-Endian).
-  * Byte `166` / `167`: Charge and Discharge MOS switch states.
-  * Byte `299`: Checksum (sum of bytes 0..298 & 0xFF).
-* **Commands & Settings**:
+* **Frame Versioning & Sizing**:
+  * All JK02 communication frames strictly adhere to **300 bytes** with CRC at byte index 299 (`crc = sum(bytes 0..298)`).
+* **Frame Types**:
+  * **Device Information Frame (300 Bytes, Type `0x03`)** — Returned in response to `0x97`:
+    * Preamble: `0x55 0xAA 0xEB 0x90 0x03` + counter.
+    * Model string (16 chars, e.g. `JK-B2A8S20P`), Hardware version (`11.XW`), Software version (`11.28`), Uptime (s), Device Passcode (`1234`), Manufacturing date (`240510`), Serial number (`2405101001`), User data (`Input Userdata`), Setup passcode (`123456`).
+  * **Cell Info Telemetry Frame (300 Bytes, Type `0x02`)** — Returned in response to `0x96` and periodic broadcast:
+    * Preamble: `0x55 0xAA 0xEB 0x90 0x02` + counter.
+    * Bytes `6..69`: 32 cell voltages (uint16 Little-Endian in mV).
+    * Bytes `70..133`: 32 cell internal resistances (uint16 Little-Endian in $\text{m}\Omega$, $\approx 0.3\,\text{m}\Omega$).
+    * Bytes `134..137`: Total pack voltage in mV (uint32 Little-Endian).
+    * Bytes `138..141`: Current in mA (signed int32 Little-Endian).
+    * Bytes `142..149`: Remaining and nominal capacity in mAh (uint32 Little-Endian).
+    * Bytes `150..153`: Cycle count (uint32 Little-Endian).
+    * Byte `158`: State of Health (SOH $100\%$).
+    * Bytes `162..165`: Total uptime in seconds (uint32 Little-Endian).
+    * Byte `166` / `167`: Charge and Discharge MOS switch states.
+    * Bytes `202..203`: Battery voltage in $0.01\text{ V}$.
+    * Bytes `222..227`: MOS, Sensor 2, and Sensor 1 temperatures in $0.1\,^\circ\text{C}$.
+  * **Settings Frame (300 Bytes, Type `0x01`)** — Returned in response to `0x01` and on subscribe:
+    * Preamble: `0x55 0xAA 0xEB 0x90 0x01` + counter.
+    * Complete operational thresholds: Smart sleep voltage, Cell UVP ($2800\text{ mV}$), Cell UVPR ($3000\text{ mV}$), Cell OVP ($3650\text{ mV}$), Cell OVPR ($3550\text{ mV}$), Max charge/discharge currents, Balance trigger voltage, Cell count ($8$ or $16$), MOS states, Nominal capacity.
+* **Handshake & Commands**:
+  * Query Device Info: `AA 55 90 EB 97 00 ...`
   * Query CellInfo: `AA 55 90 EB 96 00 ...`
-  * Query Settings: `AA 55 90 EB 97 00 ...`
+  * Query Settings: `AA 55 90 EB 01 00 ...`
   * Switch register writes: `0x1D` (Charge MOS), `0x1E` (Discharge MOS), `0x1F` (Balancer).
+  * Automatic three-frame burst upon connection/subscription (`Device Info` $\to$ `Cell Info` $\to$ `Settings`).
 
 ---
 

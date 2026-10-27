@@ -128,6 +128,8 @@ NimBLECharacteristic* pDalyNusRx = nullptr;
 // Ant BMS Characteristics
 NimBLECharacteristic* pAntNotifyChar = nullptr;
 NimBLECharacteristic* pAntWriteChar = nullptr;
+NimBLECharacteristic* pAntNusTx = nullptr;
+NimBLECharacteristic* pAntNusRx = nullptr;
 
 // JKBMS Characteristics
 NimBLECharacteristic* pJkNotifyChar = nullptr;
@@ -2063,10 +2065,21 @@ void buildAntTelemetryFrame(uint8_t* frame) {
     frame[3] = 0xFF;
 
     // Bytes 4..67: Cell voltages 1..32 (16-bit Big-Endian in mV)
+    uint16_t minMv = 9999;
+    uint16_t maxMv = 0;
+    uint8_t minIdx = 1;
+    uint8_t maxIdx = 1;
+    uint32_t sumMv = 0;
+
     for (uint8_t i = 0; i < 32; ++i) {
         uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0;
         frame[4 + i * 2]     = (mv >> 8) & 0xFF;
         frame[4 + i * 2 + 1] = mv & 0xFF;
+        if (i < g_bms.cell_count) {
+            sumMv += mv;
+            if (mv < minMv) { minMv = mv; minIdx = i + 1; }
+            if (mv > maxMv) { maxMv = mv; maxIdx = i + 1; }
+        }
     }
 
     // Bytes 70..73: Current (signed 32-bit Big-Endian, unit 0.1A)
@@ -2100,16 +2113,14 @@ void buildAntTelemetryFrame(uint8_t* frame) {
     frame[85] = (cycleMah >> 8)  & 0xFF;
     frame[86] = cycleMah & 0xFF;
 
-    // Bytes 87..88: Cycle Count
-    frame[87] = (g_bms.cycle_count >> 8) & 0xFF;
-    frame[88] = g_bms.cycle_count & 0xFF;
+    // Bytes 87..90: Uptime in seconds since boot (uint32 Big-Endian)
+    uint32_t uptimeSec = millis() / 1000;
+    frame[87] = (uptimeSec >> 24) & 0xFF;
+    frame[88] = (uptimeSec >> 16) & 0xFF;
+    frame[89] = (uptimeSec >> 8)  & 0xFF;
+    frame[90] = uptimeSec & 0xFF;
 
-    // Bytes 89..90: Pack Voltage in 0.1V
-    uint16_t pack01v = g_bms.pack_voltage_10mv / 10;
-    frame[89] = (pack01v >> 8) & 0xFF;
-    frame[90] = pack01v & 0xFF;
-
-    // Temperatures (°C signed int16 Big-Endian)
+    // Temperatures (°C signed int16 Big-Endian, 5 sensors: 91..100)
     int16_t tMos = (int16_t)((g_bms.ntc3_temp_01k - 2731) / 10);
     frame[91] = (tMos >> 8) & 0xFF;
     frame[92] = tMos & 0xFF;
@@ -2125,9 +2136,48 @@ void buildAntTelemetryFrame(uint8_t* frame) {
     // Switches
     frame[101] = (g_bms.fet_status & 0x01) ? 1 : 0;
     frame[102] = (g_bms.fet_status & 0x02) ? 1 : 0;
-    frame[103] = (g_bms.fet_status & 0x01) ? 1 : 0; // Charge FET
-    frame[104] = (g_bms.fet_status & 0x02) ? 1 : 0; // Discharge FET
-    frame[105] = 1;                                 // Balancer
+    frame[103] = (g_bms.fet_status & 0x01) ? 1 : 0; // wMosCharge (1 = ON, 0 = OFF)
+    frame[104] = (g_bms.fet_status & 0x02) ? 1 : 0; // wMosDischarge (1 = ON, 0 = OFF)
+    frame[105] = 1;                                 // wBalanced
+
+    // Bytes 111..114: Instantaneous Power in Watts (signed int32 Big-Endian)
+    float packVolts = (float)sumMv * 0.001f;
+    float packAmps  = (float)cur01a * 0.1f;
+    int32_t powerW  = (int32_t)(packVolts * packAmps);
+    frame[111] = (powerW >> 24) & 0xFF;
+    frame[112] = (powerW >> 16) & 0xFF;
+    frame[113] = (powerW >> 8)  & 0xFF;
+    frame[114] = powerW & 0xFF;
+
+    // Byte 115: Highest voltage cell index (1..32)
+    frame[115] = maxIdx;
+
+    // Bytes 116..117: Highest cell voltage in mV (uint16 Big-Endian)
+    frame[116] = (maxMv >> 8) & 0xFF;
+    frame[117] = maxMv & 0xFF;
+
+    // Byte 118: Lowest voltage cell index (1..32)
+    frame[118] = minIdx;
+
+    // Bytes 119..120: Lowest cell voltage in mV (uint16 Big-Endian)
+    frame[119] = (minMv >> 8) & 0xFF;
+    frame[120] = minMv & 0xFF;
+
+    // Bytes 121..122: Average cell voltage in mV (uint16 Big-Endian)
+    uint16_t avgMv = g_bms.cell_count > 0 ? (uint16_t)(sumMv / g_bms.cell_count) : 0;
+    frame[121] = (avgMv >> 8) & 0xFF;
+    frame[122] = avgMv & 0xFF;
+
+    // Byte 123: iBattEff (Effective cell count, critical for Ant BMS App rendering!)
+    frame[123] = g_bms.cell_count;
+
+    // Bytes 126..127: Discharge MOS gate drive voltage (12.0V = 120, unit 0.1V)
+    frame[126] = 0;
+    frame[127] = (g_bms.fet_status & 0x02) ? 120 : 0;
+
+    // Bytes 128..129: Charge MOS gate drive voltage (12.0V = 120, unit 0.1V)
+    frame[128] = 0;
+    frame[129] = (g_bms.fet_status & 0x01) ? 120 : 0;
 
     // Bytes 138..139: Checksum (sum of bytes 4..137)
     uint16_t checksum = 0;
@@ -2137,18 +2187,37 @@ void buildAntTelemetryFrame(uint8_t* frame) {
 }
 
 void sendAntTelemetry() {
-    if (!g_deviceConnected || !pAntNotifyChar) return;
+    if (!g_deviceConnected) return;
     uint8_t frame[140];
     buildAntTelemetryFrame(frame);
-    pAntNotifyChar->notify(frame, sizeof(frame));
+    if (pAntNotifyChar) pAntNotifyChar->notify(frame, sizeof(frame));
+    if (pAntNusTx) pAntNusTx->notify(frame, sizeof(frame));
 }
 
 class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+        Serial.printf("[ANT BLE] Subscribed to %s (subValue=%d)\n", pCharacteristic->getUUID().toString().c_str(), subValue);
+        if (subValue > 0) {
+            sendAntTelemetry();
+        }
+    }
+
+    void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        Serial.printf("[ANT BLE] Read request on %s\n", pCharacteristic->getUUID().toString().c_str());
+        uint8_t frame[140];
+        buildAntTelemetryFrame(frame);
+        pCharacteristic->setValue(frame, sizeof(frame));
+    }
+
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         std::string val = pCharacteristic->getValue();
         if (val.empty()) return;
         const uint8_t* data = (const uint8_t*)val.data();
         size_t len = val.length();
+
+        Serial.printf("[ANT BLE] onWrite len=%d: ", len);
+        for (size_t i = 0; i < len && i < 16; ++i) Serial.printf("%02X ", data[i]);
+        Serial.println();
 
         // 1. Query: 0xDB 0xDB or 0x5A 0x5A
         if (len >= 2 && ((data[0] == 0xDB && data[1] == 0xDB) || (data[0] == 0x5A && data[1] == 0x5A))) {
@@ -2181,18 +2250,155 @@ class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 // ============================================================================
-// JKBMS Protocol Engine (JK02 300-Byte Live Cell Info & Settings Frames)
+// JKBMS Protocol Engine (JK02 300-Byte Live Cell Info, Settings & Device Info)
 // ============================================================================
+
+void buildJkDeviceInfoFrame(uint8_t* frame) {
+    memset(frame, 0, 300);
+    static uint8_t s_devCounter = 0;
+    frame[0] = 0x55;
+    frame[1] = 0xAA;
+    frame[2] = 0xEB;
+    frame[3] = 0x90;
+    frame[4] = 0x03; // Frame Type: Device Info
+    frame[5] = s_devCounter++;
+
+    // Vendor ID / Model (bytes 6..21, 16 chars)
+    String model = getJkDeviceName();
+    strncpy((char*)&frame[6], model.c_str(), 16);
+
+    // Hardware version (bytes 22..29, 8 chars)
+    strncpy((char*)&frame[22], "11.XW", 8);
+
+    // Software version (bytes 30..37, 8 chars)
+    strncpy((char*)&frame[30], "11.28", 8);
+
+    // Uptime in seconds (bytes 38..41, uint32 LE)
+    uint32_t uptime = millis() / 1000;
+    frame[38] = uptime & 0xFF;
+    frame[39] = (uptime >> 8) & 0xFF;
+    frame[40] = (uptime >> 16) & 0xFF;
+    frame[41] = (uptime >> 24) & 0xFF;
+
+    // Power on count (bytes 42..45, uint32 LE)
+    frame[42] = 1;
+
+    // Device name (bytes 46..61, 16 chars)
+    strncpy((char*)&frame[46], model.c_str(), 16);
+
+    // Device passcode (bytes 62..77, 16 chars)
+    strncpy((char*)&frame[62], "1234", 16);
+
+    // Manufacturing date (bytes 78..83, YYMMDD)
+    strncpy((char*)&frame[78], "240510", 6);
+
+    // Serial number (bytes 86..96, 11 chars)
+    strncpy((char*)&frame[86], "2405101001", 11);
+
+    // Passcode (bytes 97..101, 5 chars)
+    strncpy((char*)&frame[97], "0000", 5);
+
+    // User data (bytes 102..117, 16 chars)
+    strncpy((char*)&frame[102], "Input Userdata", 16);
+
+    // Setup passcode (bytes 118..133, 16 chars)
+    strncpy((char*)&frame[118], "123456", 16);
+
+    // Checksum at byte 299
+    uint8_t crc = 0;
+    for (int i = 0; i < 299; ++i) crc += frame[i];
+    frame[299] = crc;
+}
+
+void buildJkSettingsFrame(uint8_t* frame) {
+    memset(frame, 0, 300);
+    static uint8_t s_setCounter = 0;
+    frame[0] = 0x55;
+    frame[1] = 0xAA;
+    frame[2] = 0xEB;
+    frame[3] = 0x90;
+    frame[4] = 0x01; // Frame Type: Settings
+    frame[5] = s_setCounter++;
+
+    // Smart sleep voltage (6..9, uint32 LE in mV) -> 2900 mV
+    uint32_t sleepMv = 2900;
+    memcpy(&frame[6], &sleepMv, 4);
+
+    // Cell UVP (10..13, in mV) -> 2800 mV
+    uint32_t uvpMv = 2800;
+    memcpy(&frame[10], &uvpMv, 4);
+
+    // Cell UVPR (14..17, in mV) -> 3000 mV
+    uint32_t uvprMv = 3000;
+    memcpy(&frame[14], &uvprMv, 4);
+
+    // Cell OVP (18..21, in mV) -> 3650 mV
+    uint32_t ovpMv = 3650;
+    memcpy(&frame[18], &ovpMv, 4);
+
+    // Cell OVPR (22..25, in mV) -> 3550 mV
+    uint32_t ovprMv = 3550;
+    memcpy(&frame[22], &ovprMv, 4);
+
+    // Balance trigger voltage (26..29, in mV) -> 10 mV
+    uint32_t balTrigMv = 10;
+    memcpy(&frame[26], &balTrigMv, 4);
+
+    // Power off voltage (46..49, in mV) -> 2700 mV
+    uint32_t pwrOffMv = 2700;
+    memcpy(&frame[46], &pwrOffMv, 4);
+
+    // Max charge current (50..53, in mA) -> 50000 mA (50A)
+    uint32_t maxChgMa = 50000;
+    memcpy(&frame[50], &maxChgMa, 4);
+
+    // Charge OCP delay (54..57, in seconds) -> 30 s
+    uint32_t chgOcpDelay = 30;
+    memcpy(&frame[54], &chgOcpDelay, 4);
+
+    // Max discharge current (62..65, in mA) -> 100000 mA (100A)
+    uint32_t maxDisMa = 100000;
+    memcpy(&frame[62], &maxDisMa, 4);
+
+    // Max balance current (78..81, in mA) -> 2000 mA (2A active balance)
+    uint32_t maxBalMa = 2000;
+    memcpy(&frame[78], &maxBalMa, 4);
+
+    // Cell count (114..117, uint32 LE)
+    uint32_t cellCount = g_bms.cell_count;
+    memcpy(&frame[114], &cellCount, 4);
+
+    // Charge switch (118..121)
+    frame[118] = (g_bms.fet_status & 0x01) ? 1 : 0;
+    // Discharge switch (122..125)
+    frame[122] = (g_bms.fet_status & 0x02) ? 1 : 0;
+    // Balancer switch (126..129)
+    frame[126] = 1;
+
+    // Nominal capacity (130..133, in mAh)
+    uint32_t nomMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
+    memcpy(&frame[130], &nomMah, 4);
+
+    // Start balance voltage (138..141, in mV) -> 3300 mV
+    uint32_t startBalMv = 3300;
+    memcpy(&frame[138], &startBalMv, 4);
+
+    // Checksum at byte 299
+    uint8_t crc = 0;
+    for (int i = 0; i < 299; ++i) crc += frame[i];
+    frame[299] = crc;
+}
 
 void buildJkCellInfoFrame(uint8_t* frame) {
     memset(frame, 0, 300);
+    static uint8_t s_cellCounter = 0;
     // Header
     frame[0] = 0x55;
     frame[1] = 0xAA;
     frame[2] = 0xEB;
     frame[3] = 0x90;
     frame[4] = 0x02; // Frame Type: Cell Info
-    frame[5] = 0x00;
+    frame[5] = s_cellCounter++;
 
     // Cell voltages 1..32 (bytes 6 + i*2: Little-Endian uint16 in mV)
     for (uint8_t i = 0; i < 32; ++i) {
@@ -2201,66 +2407,68 @@ void buildJkCellInfoFrame(uint8_t* frame) {
         frame[6 + i * 2 + 1] = (mv >> 8) & 0xFF;
     }
 
-    // Total Voltage (bytes 118..121: uint32 Little-Endian in mV)
+    // Cell resistances 1..32 (bytes 70 + i*2: Little-Endian uint16, ~0.3 mOhm)
+    for (uint8_t i = 0; i < 32; ++i) {
+        uint16_t res = (i < g_bms.cell_count) ? 300 : 0;
+        frame[70 + i * 2]     = res & 0xFF;
+        frame[70 + i * 2 + 1] = (res >> 8) & 0xFF;
+    }
+
+    // Total Voltage (bytes 134..137: uint32 Little-Endian in mV)
     uint32_t totalMv = 0;
     for (uint8_t i = 0; i < g_bms.cell_count && i < 32; ++i) totalMv += g_bms.cell_mv[i];
-    frame[118] = totalMv & 0xFF;
-    frame[119] = (totalMv >> 8) & 0xFF;
-    frame[120] = (totalMv >> 16) & 0xFF;
-    frame[121] = (totalMv >> 24) & 0xFF;
+    memcpy(&frame[134], &totalMv, 4);
 
-    // Current (bytes 126..129: signed int32 Little-Endian in mA, + = Charge, - = Discharge)
+    // Current (bytes 138..141: signed int32 Little-Endian in mA, + = Charge, - = Discharge)
     int32_t curMa = (int32_t)g_bms.current_10ma * 10;
-    frame[126] = curMa & 0xFF;
-    frame[127] = (curMa >> 8) & 0xFF;
-    frame[128] = (curMa >> 16) & 0xFF;
-    frame[129] = (curMa >> 24) & 0xFF;
-
-    // Temperatures (int16 Little-Endian in 0.1°C)
-    int16_t t1 = (int16_t)(g_bms.ntc1_temp_01k - 2731);
-    frame[130] = t1 & 0xFF;
-    frame[131] = (t1 >> 8) & 0xFF;
-
-    int16_t t2 = (int16_t)(g_bms.ntc2_temp_01k - 2731);
-    frame[132] = t2 & 0xFF;
-    frame[133] = (t2 >> 8) & 0xFF;
-
-    int16_t tMos = (int16_t)(g_bms.ntc3_temp_01k - 2731);
-    frame[134] = tMos & 0xFF;
-    frame[135] = (tMos >> 8) & 0xFF;
-
-    // Balancer current (138..139) & state (140)
-    frame[138] = 0;
-    frame[139] = 0;
-    frame[140] = 0;
-
-    // SOC (%)
-    frame[141] = g_bms.soc_percent;
+    memcpy(&frame[138], &curMa, 4);
 
     // Capacity remaining in mAh (142..145)
     uint32_t remMah = (uint32_t)g_bms.remain_cap_10mah * 10;
-    frame[142] = remMah & 0xFF;
-    frame[143] = (remMah >> 8) & 0xFF;
-    frame[144] = (remMah >> 16) & 0xFF;
-    frame[145] = (remMah >> 24) & 0xFF;
+    memcpy(&frame[142], &remMah, 4);
 
     // Capacity nominal in mAh (146..149)
     uint32_t nomMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
-    frame[146] = nomMah & 0xFF;
-    frame[147] = (nomMah >> 8) & 0xFF;
-    frame[148] = (nomMah >> 16) & 0xFF;
-    frame[149] = (nomMah >> 24) & 0xFF;
+    memcpy(&frame[146], &nomMah, 4);
 
     // Cycle count (150..153)
     uint32_t cycles = g_bms.cycle_count;
-    frame[150] = cycles & 0xFF;
-    frame[151] = (cycles >> 8) & 0xFF;
-    frame[152] = (cycles >> 16) & 0xFF;
-    frame[153] = (cycles >> 24) & 0xFF;
+    memcpy(&frame[150], &cycles, 4);
+
+    // Cycle capacity in mAh (154..157)
+    uint32_t cycleMah = (uint32_t)g_bms.cycle_cap_10mah * 10;
+    memcpy(&frame[154], &cycleMah, 4);
+
+    // SOH (%)
+    frame[158] = 100;
+
+    // Total runtime in seconds (162..165)
+    uint32_t uptime = millis() / 1000;
+    memcpy(&frame[162], &uptime, 4);
 
     // Switches
     frame[166] = (g_bms.fet_status & 0x01) ? 1 : 0; // Charge MOS
     frame[167] = (g_bms.fet_status & 0x02) ? 1 : 0; // Discharge MOS
+    frame[168] = 0; // Precharge
+    frame[169] = 1; // Balancer working
+
+    // Battery pack voltage in 0.01V (202..203)
+    uint16_t pack001v = (uint16_t)(totalMv / 10);
+    frame[202] = pack001v & 0xFF;
+    frame[203] = (pack001v >> 8) & 0xFF;
+
+    // Temperatures in 0.1°C (222..227)
+    int16_t tMos = (int16_t)(g_bms.ntc3_temp_01k - 2731);
+    frame[222] = tMos & 0xFF;
+    frame[223] = (tMos >> 8) & 0xFF;
+
+    int16_t t2 = (int16_t)(g_bms.ntc2_temp_01k - 2731);
+    frame[224] = t2 & 0xFF;
+    frame[225] = (t2 >> 8) & 0xFF;
+
+    int16_t t1 = (int16_t)(g_bms.ntc1_temp_01k - 2731);
+    frame[226] = t1 & 0xFF;
+    frame[227] = (t1 >> 8) & 0xFF;
 
     // Checksum (byte 299: sum of bytes 0..298)
     uint8_t crc = 0;
@@ -2268,21 +2476,11 @@ void buildJkCellInfoFrame(uint8_t* frame) {
     frame[299] = crc;
 }
 
-void buildJkSettingsFrame(uint8_t* frame) {
-    memset(frame, 0, 130);
-    frame[0] = 0x55;
-    frame[1] = 0xAA;
-    frame[2] = 0xEB;
-    frame[3] = 0x90;
-    frame[4] = 0x01; // Frame Type: Settings / Info
-
-    frame[118] = (g_bms.fet_status & 0x01) ? 1 : 0;
-    frame[122] = (g_bms.fet_status & 0x02) ? 1 : 0;
-    frame[126] = 1;
-
-    uint8_t crc = 0;
-    for (int i = 0; i < 129; ++i) crc += frame[i];
-    frame[129] = crc;
+void sendJkDeviceInfo() {
+    if (!g_deviceConnected || !pJkNotifyChar) return;
+    uint8_t frame[300];
+    buildJkDeviceInfoFrame(frame);
+    pJkNotifyChar->notify(frame, sizeof(frame));
 }
 
 void sendJkCellInfo() {
@@ -2294,17 +2492,39 @@ void sendJkCellInfo() {
 
 void sendJkSettings() {
     if (!g_deviceConnected || !pJkNotifyChar) return;
-    uint8_t frame[130];
+    uint8_t frame[300];
     buildJkSettingsFrame(frame);
     pJkNotifyChar->notify(frame, sizeof(frame));
 }
 
 class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+        Serial.printf("[JK BLE] Subscribed to %s (subValue=%d)\n", pCharacteristic->getUUID().toString().c_str(), subValue);
+        if (subValue > 0) {
+            sendJkDeviceInfo();
+            delay(40);
+            sendJkCellInfo();
+            delay(40);
+            sendJkSettings();
+        }
+    }
+
+    void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        Serial.printf("[JK BLE] Read request on %s\n", pCharacteristic->getUUID().toString().c_str());
+        uint8_t frame[300];
+        buildJkDeviceInfoFrame(frame);
+        pCharacteristic->setValue(frame, sizeof(frame));
+    }
+
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         std::string val = pCharacteristic->getValue();
         if (val.empty()) return;
         const uint8_t* data = (const uint8_t*)val.data();
         size_t len = val.length();
+
+        Serial.printf("[JK BLE] onWrite len=%d: ", len);
+        for (size_t i = 0; i < len && i < 16; ++i) Serial.printf("%02X ", data[i]);
+        Serial.println();
 
         if (len >= 5 && data[0] == 0xAA && data[1] == 0x55 && data[2] == 0x90 && data[3] == 0xEB) {
             uint8_t cmd = data[4];
@@ -2312,6 +2532,9 @@ class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
                 sendJkCellInfo();
                 return;
             } else if (cmd == 0x97) {
+                sendJkDeviceInfo();
+                return;
+            } else if (cmd == 0x01) {
                 sendJkSettings();
                 return;
             } else if (cmd == 0x1D) {
@@ -2332,11 +2555,14 @@ class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
                 return;
             } else if (cmd == 0x1F) {
                 Serial.println("[JK] Balancer Switch toggled");
+                updateStatusLed();
                 sendJkCellInfo();
                 return;
             }
         }
 
+        sendJkDeviceInfo();
+        delay(30);
         sendJkCellInfo();
     }
 };
@@ -3070,6 +3296,27 @@ void setup() {
             NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
         );
         pAntFff1->setCallbacks(new AntWriteCallbacks());
+
+        // Nordic UART Service (NUS) 6E400001-...
+        NimBLEService* pAntNusService = pServer->createService(NimBLEUUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"));
+        pAntNusRx = pAntNusService->createCharacteristic(
+            NimBLEUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pAntNusRx->setCallbacks(new AntWriteCallbacks());
+
+        pAntNusTx = pAntNusService->createCharacteristic(
+            NimBLEUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pAntNusTx->setCallbacks(new AntWriteCallbacks());
+
+        // Device Information Service 0x180A
+        NimBLEService* pAntDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
+        pAntDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ)->setValue(antName.c_str());
+        pAntDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ)->setValue("ANT");
+        pAntDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ)->setValue("ANT_V2");
+        pAntDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ)->setValue("ANT-BMS");
 
         pServer->start();
 
