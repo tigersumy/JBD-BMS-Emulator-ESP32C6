@@ -721,6 +721,7 @@ static NimBLECharacteristic* s_lastJbdTargetNotifyChar = nullptr;
 static NimBLECharacteristic* s_lastDalyTargetNotifyChar = nullptr;
 static NimBLECharacteristic* s_lastAntTargetNotifyChar = nullptr;
 static uint16_t s_lastDalyReadCount = 0;
+static bool s_clientIsAntV2 = false;
 
 // ============================================================================
 // Server Connection & Security Callbacks (Passkey = 123456)
@@ -739,6 +740,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         s_lastDalyTargetNotifyChar = nullptr;
         s_lastAntTargetNotifyChar = nullptr;
         s_lastDalyReadCount = 0;
+        s_clientIsAntV2 = false;
         updateStatusLed();
         Serial.printf("[BLE] Client disconnected (reason: %d). Restarting advertising...\n", reason);
         NimBLEDevice::startAdvertising();
@@ -2237,12 +2239,261 @@ void sendAntTelemetry() {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Ant BMS v2 Modern Protocol (7E A1 Frame Parser & Builder)
+// ----------------------------------------------------------------------------
+uint16_t antCrc16(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (uint8_t b = 0; b < 8; ++b) {
+            if (crc & 1) {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+size_t buildAntV2StatusFrame(uint8_t* frame) {
+    uint8_t cells = (g_bms.cell_count > 0 && g_bms.cell_count <= 32) ? g_bms.cell_count : 8;
+    uint8_t temp_sensors = 4;
+    uint8_t offset = cells * 2 + temp_sensors * 2;
+    uint8_t payload_len = 112 + offset;
+    size_t total_len = 6 + payload_len + 4;
+
+    memset(frame, 0, total_len);
+    frame[0] = 0x7E;
+    frame[1] = 0xA1;
+    frame[2] = 0x11; // ANT_FRAME_TYPE_STATUS
+    frame[3] = 0x00;
+    frame[4] = 0x00;
+    frame[5] = payload_len;
+    frame[6] = 0x05; // Permissions
+
+    // Battery status (1: Idle, 2: Charge, 3: Discharge, 4: Standby, 5: Error)
+    uint8_t batStatus = 1;
+    if (g_bms.mode == MODE_CHARGE) batStatus = 2;
+    else if (g_bms.mode == MODE_DISCHARGE) batStatus = 3;
+    frame[7] = batStatus;
+
+    frame[8] = temp_sensors;
+    frame[9] = cells;
+
+    // Bytes 34..(34 + cells*2): Cell voltages in mV (uint16 LE)
+    uint32_t totalMv = 0;
+    uint16_t minMv = 0xFFFF;
+    uint16_t maxMv = 0;
+    uint16_t minIdx = 1;
+    uint16_t maxIdx = 1;
+
+    for (uint8_t i = 0; i < cells; ++i) {
+        uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 3280;
+        frame[34 + i * 2]     = mv & 0xFF;
+        frame[34 + i * 2 + 1] = (mv >> 8) & 0xFF;
+        totalMv += mv;
+        if (mv < minMv) { minMv = mv; minIdx = i + 1; }
+        if (mv > maxMv) { maxMv = mv; maxIdx = i + 1; }
+    }
+    if (minMv == 0xFFFF) minMv = 0;
+
+    // Temperature sensors 1..4 in °C (int16 LE)
+    int16_t t1 = (int16_t)((g_bms.ntc1_temp_01k - 2731) / 10);
+    int16_t t2 = (int16_t)((g_bms.ntc2_temp_01k - 2731) / 10);
+    int16_t tMos = (int16_t)((g_bms.ntc3_temp_01k - 2731) / 10);
+    int16_t tBal = tMos;
+
+    int16_t temps[4] = { t1, t2, t1, t2 };
+    for (uint8_t i = 0; i < temp_sensors; ++i) {
+        frame[34 + cells * 2 + i * 2]     = temps[i] & 0xFF;
+        frame[34 + cells * 2 + i * 2 + 1] = (temps[i] >> 8) & 0xFF;
+    }
+
+    size_t off = 34 + offset;
+    // MOSFET temperature (int16 LE)
+    frame[off + 0] = tMos & 0xFF;
+    frame[off + 1] = (tMos >> 8) & 0xFF;
+
+    // Balancer temperature (int16 LE)
+    frame[off + 2] = tBal & 0xFF;
+    frame[off + 3] = (tBal >> 8) & 0xFF;
+
+    // Total voltage in 0.01V (uint16 LE)
+    uint16_t vCentivolts = (uint16_t)(totalMv / 10);
+    frame[off + 4] = vCentivolts & 0xFF;
+    frame[off + 5] = (vCentivolts >> 8) & 0xFF;
+
+    // Current in 0.1A (int16 LE, + = Charge, - = Discharge)
+    int16_t cur01a = (int16_t)(g_bms.current_10ma / 10);
+    frame[off + 6] = cur01a & 0xFF;
+    frame[off + 7] = (cur01a >> 8) & 0xFF;
+
+    // SOC in 1% (uint16 LE)
+    frame[off + 8] = g_bms.soc_percent & 0xFF;
+    frame[off + 9] = 0;
+
+    // SOH in 1% (uint16 LE)
+    frame[off + 10] = 100;
+    frame[off + 11] = 0;
+
+    // Charge MOS status (1 = ON, 0 = OFF)
+    frame[off + 12] = (g_bms.fet_status & 0x01) ? 1 : 0;
+
+    // Discharge MOS status (1 = ON, 0 = OFF)
+    frame[off + 13] = (g_bms.fet_status & 0x02) ? 1 : 0;
+
+    // Balancer status (4 = Equalization ON, 0 = OFF)
+    frame[off + 14] = (g_bms.balance_low > 0) ? 4 : 0;
+
+    // Reserved (byte off + 15) = 0
+
+    // Battery nominal capacity (uint32 LE, scaled by 1,000,000)
+    uint32_t nomAhMicro = (uint32_t)g_bms.nominal_cap_10mah * 10000;
+    memcpy(&frame[off + 16], &nomAhMicro, 4);
+
+    // Battery remaining capacity (uint32 LE, scaled by 1,000,000)
+    uint32_t remAhMicro = (uint32_t)g_bms.remain_cap_10mah * 10000;
+    memcpy(&frame[off + 20], &remAhMicro, 4);
+
+    // Total battery cycles capacity (uint32 LE, scaled by 1,000)
+    uint32_t cycleAhMilli = (uint32_t)g_bms.cycle_cap_10mah * 10;
+    memcpy(&frame[off + 24], &cycleAhMilli, 4);
+
+    // Power in Watts (int32 LE)
+    float packVolts = (float)totalMv * 0.001f;
+    float packAmps = (float)cur01a * 0.1f;
+    int32_t powerW = (int32_t)(packVolts * packAmps);
+    memcpy(&frame[off + 28], &powerW, 4);
+
+    // Total runtime in seconds (uint32 LE)
+    uint32_t uptimeSec = millis() / 1000;
+    memcpy(&frame[off + 32], &uptimeSec, 4);
+
+    // Balanced cell bitmask (uint32 LE)
+    uint32_t balMask = (g_bms.balance_low > 0) ? 0x01 : 0;
+    memcpy(&frame[off + 36], &balMask, 4);
+
+    // Max cell voltage in mV (uint16 LE)
+    frame[off + 40] = maxMv & 0xFF;
+    frame[off + 41] = (maxMv >> 8) & 0xFF;
+
+    // Max voltage cell index (uint16 LE, 1-based)
+    frame[off + 42] = maxIdx & 0xFF;
+    frame[off + 43] = 0;
+
+    // Min cell voltage in mV (uint16 LE)
+    frame[off + 44] = minMv & 0xFF;
+    frame[off + 45] = (minMv >> 8) & 0xFF;
+
+    // Min voltage cell index (uint16 LE, 1-based)
+    frame[off + 46] = minIdx & 0xFF;
+    frame[off + 47] = 0;
+
+    // Delta cell voltage in mV (uint16 LE)
+    uint16_t deltaMv = (maxMv >= minMv) ? (maxMv - minMv) : 0;
+    frame[off + 48] = deltaMv & 0xFF;
+    frame[off + 49] = (deltaMv >> 8) & 0xFF;
+
+    // Average cell voltage in mV (uint16 LE)
+    uint16_t avgMv = (cells > 0) ? (uint16_t)(totalMv / cells) : 0;
+    frame[off + 50] = avgMv & 0xFF;
+    frame[off + 51] = (avgMv >> 8) & 0xFF;
+
+    // Drive voltages (discharge / charge FET 12.0V)
+    frame[off + 54] = (g_bms.fet_status & 0x02) ? 120 : 0;
+    frame[off + 56] = (g_bms.fet_status & 0x01) ? 120 : 0;
+
+    // Battery type (1 = LiFePO4)
+    frame[off + 60] = 1;
+
+    // CRC16 over bytes [1 .. total_len - 5]
+    uint16_t crc = antCrc16(&frame[1], total_len - 5);
+    frame[total_len - 4] = crc & 0xFF;
+    frame[total_len - 3] = (crc >> 8) & 0xFF;
+    frame[total_len - 2] = 0xAA;
+    frame[total_len - 1] = 0x55;
+
+    return total_len;
+}
+
+void sendAntV2Status() {
+    if (!g_deviceConnected) return;
+    uint8_t frame[256];
+    size_t len = buildAntV2StatusFrame(frame);
+    NimBLECharacteristic* target = s_lastAntTargetNotifyChar;
+    if (!target) target = pAntNotifyChar ? pAntNotifyChar : pAntNusTx;
+    if (target) {
+        sendBleChunks(target, frame, len, 20, 15);
+        Serial.printf("[ANT TX] Sent Ant v2 Status (%d bytes)\n", (int)len);
+    }
+}
+
+void sendAntV2SettingsAck(uint16_t address, uint16_t val) {
+    if (!g_deviceConnected) return;
+    uint8_t resp[12];
+    resp[0] = 0x7E;
+    resp[1] = 0xA1;
+    resp[2] = 0x61; // Register ACK function
+    resp[3] = address & 0xFF;
+    resp[4] = (address >> 8) & 0xFF;
+    resp[5] = 0x02; // len = 2 bytes
+    resp[6] = val & 0xFF;
+    resp[7] = (val >> 8) & 0xFF;
+    uint16_t crc = antCrc16(&resp[1], 7);
+    resp[8] = crc & 0xFF;
+    resp[9] = (crc >> 8) & 0xFF;
+    resp[10] = 0xAA;
+    resp[11] = 0x55;
+
+    NimBLECharacteristic* target = s_lastAntTargetNotifyChar;
+    if (!target) target = pAntNotifyChar ? pAntNotifyChar : pAntNusTx;
+    if (target) {
+        sendBleChunks(target, resp, sizeof(resp), 20, 15);
+        Serial.printf("[ANT TX] Sent Ant v2 Register 0x%04X ACK\n", address);
+    }
+}
+
+void sendAntV2DeviceInfo() {
+    if (!g_deviceConnected) return;
+    uint8_t resp[44];
+    memset(resp, 0, sizeof(resp));
+    resp[0] = 0x7E;
+    resp[1] = 0xA1;
+    resp[2] = 0x12; // ANT_FRAME_TYPE_DEVICE_INFO
+    resp[3] = 0x6C; // addr 0x026C
+    resp[4] = 0x02;
+    resp[5] = 32;   // data length
+
+    String model = getAntDeviceName();
+    strncpy((char*)&resp[6], model.c_str(), 16);
+    strncpy((char*)&resp[22], "ANT_V2_10.07", 16);
+
+    uint16_t crc = antCrc16(&resp[1], 37);
+    resp[38] = crc & 0xFF;
+    resp[39] = (crc >> 8) & 0xFF;
+    resp[40] = 0xAA;
+    resp[41] = 0x55;
+
+    NimBLECharacteristic* target = s_lastAntTargetNotifyChar;
+    if (!target) target = pAntNotifyChar ? pAntNotifyChar : pAntNusTx;
+    if (target) {
+        sendBleChunks(target, resp, 42, 20, 15);
+        Serial.println("[ANT TX] Sent Ant v2 Device Info (0x026C)");
+    }
+}
+
 class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
     void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
         Serial.printf("[ANT BLE] Subscribed to %s (subValue=%d)\n", pCharacteristic->getUUID().toString().c_str(), subValue);
         if (subValue > 0) {
             s_lastAntTargetNotifyChar = pCharacteristic;
-            sendAntTelemetry();
+            if (s_clientIsAntV2) {
+                sendAntV2Status();
+            } else {
+                sendAntTelemetry();
+            }
         }
     }
 
@@ -2270,13 +2521,49 @@ class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
         for (size_t i = 0; i < len && i < 16; ++i) Serial.printf("%02X ", data[i]);
         Serial.println();
 
-        // 1. Query: 0xDB 0xDB or 0x5A 0x5A
+        // 1. Ant v2 (7E A1 modern protocol from Ant BMS app)
+        if (len >= 6 && data[0] == 0x7E && data[1] == 0xA1) {
+            s_clientIsAntV2 = true;
+            uint8_t cmd = data[2];
+            uint16_t addr = data[3] | ((uint16_t)data[4] << 8);
+
+            if (cmd == 0x01) {
+                // Status Query
+                sendAntV2Status();
+                return;
+            } else if (cmd == 0x02 || cmd == 0x04) {
+                if (addr == 0x026C) {
+                    sendAntV2DeviceInfo();
+                } else {
+                    sendAntV2SettingsAck(addr, 3650);
+                }
+                return;
+            } else if (cmd == 0x51) {
+                // Switch or register write
+                uint8_t reg = data[3];
+                uint16_t v = (len >= 6) ? (data[4] | ((uint16_t)data[5] << 8)) : 0;
+                if (reg == 0x01 || reg == 0xF9) {
+                    if (v) g_bms.fet_status |= 0x01;
+                    else g_bms.fet_status &= ~0x01;
+                } else if (reg == 0x02 || reg == 0xFA) {
+                    if (v) g_bms.fet_status |= 0x02;
+                    else g_bms.fet_status &= ~0x02;
+                }
+                updateStatusLed();
+                sendAntV2Status();
+                return;
+            }
+            sendAntV2Status();
+            return;
+        }
+
+        // 2. Legacy Query: 0xDB 0xDB or 0x5A 0x5A
         if (len >= 2 && ((data[0] == 0xDB && data[1] == 0xDB) || (data[0] == 0x5A && data[1] == 0x5A))) {
             sendAntTelemetry();
             return;
         }
 
-        // 2. Switch command: 0xA5 0xA5 <cmd> <state> 0x00 0xAA
+        // 3. Legacy Switch command: 0xA5 0xA5 <cmd> <state> 0x00 0xAA
         if (len >= 6 && data[0] == 0xA5 && data[1] == 0xA5) {
             uint8_t cmdType = data[2];
             uint8_t state = data[3];
@@ -2296,7 +2583,11 @@ class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
             return;
         }
 
-        sendAntTelemetry();
+        if (s_clientIsAntV2) {
+            sendAntV2Status();
+        } else {
+            sendAntTelemetry();
+        }
     }
 };
 
@@ -3776,11 +4067,15 @@ void loop() {
         sendDalyModbusResponseD2(0x0000, s_lastDalyReadCount);
     }
 
-    // In Ant BMS mode, periodically push 140-byte frame (every 1000ms)
+    // In Ant BMS mode, periodically push telemetry (every 1000ms)
     static unsigned long s_lastAntPush = 0;
     if (g_proto == PROTO_ANT && g_deviceConnected && (now - s_lastAntPush >= 1000)) {
         s_lastAntPush = now;
-        sendAntTelemetry();
+        if (s_clientIsAntV2) {
+            sendAntV2Status();
+        } else {
+            sendAntTelemetry();
+        }
     }
 
     // In JKBMS mode, periodically push 300-byte cell info frame (every 1500ms)
