@@ -135,6 +135,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .btn-proto.active-daly {
       background: rgba(188,140,255,0.25); border-color: var(--accent-purple); color: var(--accent-purple);
     }
+    .btn-proto.active-ant {
+      background: rgba(57,197,187,0.25); border-color: var(--accent-cyan); color: var(--accent-cyan);
+    }
+    .btn-proto.active-jk {
+      background: rgba(240,136,62,0.25); border-color: var(--accent-orange); color: var(--accent-orange);
+    }
 
     /* Slider row */
     .slider-row { display: flex; align-items: center; gap: 12px; }
@@ -280,6 +286,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
           <div class="btn-row">
             <button id="btn-proto-jbd" class="btn-toggle btn-proto active-jbd" onclick="setProto('jbd')">JBD BMS (BS-26A)</button>
             <button id="btn-proto-daly" class="btn-toggle btn-proto" onclick="setProto('daly')">Daly BMS (DL-4018)</button>
+            <button id="btn-proto-ant" class="btn-toggle btn-proto" onclick="setProto('ant')">Ant BMS (ANT-BMS)</button>
+            <button id="btn-proto-jk" class="btn-toggle btn-proto" onclick="setProto('jk')">JKBMS (JK-B2A)</button>
           </div>
         </div>
 
@@ -453,15 +461,26 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Protocol badges
       const pBadge = document.getElementById('proto-badge');
       pBadge.textContent = d.proto;
+      ['jbd', 'daly', 'ant', 'jk'].forEach(p => {
+        const b = document.getElementById('btn-proto-' + p);
+        if (b) b.className = 'btn-toggle btn-proto';
+      });
+
       if (d.proto === 'DALY') {
-        pBadge.className = 'badge badge-proto' + ' active-daly';
-        document.getElementById('btn-proto-daly').className = 'btn-toggle btn-proto active-daly';
-        document.getElementById('btn-proto-jbd').className = 'btn-toggle btn-proto';
+        pBadge.className = 'badge badge-proto active-daly';
+        const b = document.getElementById('btn-proto-daly'); if (b) b.className = 'btn-toggle btn-proto active-daly';
         document.getElementById('label-proto-name').textContent = 'Daly Smart BMS (DL-4018)';
+      } else if (d.proto === 'ANT') {
+        pBadge.className = 'badge badge-proto active-ant';
+        const b = document.getElementById('btn-proto-ant'); if (b) b.className = 'btn-toggle btn-proto active-ant';
+        document.getElementById('label-proto-name').textContent = 'Ant BMS (ANT-BMS)';
+      } else if (d.proto === 'JK') {
+        pBadge.className = 'badge badge-proto active-jk';
+        const b = document.getElementById('btn-proto-jk'); if (b) b.className = 'btn-toggle btn-proto active-jk';
+        document.getElementById('label-proto-name').textContent = 'JKBMS (JK-B2A)';
       } else {
         pBadge.className = 'badge badge-proto active-jbd';
-        document.getElementById('btn-proto-jbd').className = 'btn-toggle btn-proto active-jbd';
-        document.getElementById('btn-proto-daly').className = 'btn-toggle btn-proto';
+        const b = document.getElementById('btn-proto-jbd'); if (b) b.className = 'btn-toggle btn-proto active-jbd';
         document.getElementById('label-proto-name').textContent = 'JBD BMS (BS-26A)';
       }
 
@@ -741,7 +760,7 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
         <label style="font-size:1.05rem; font-weight:700;">📡 BLE MAC-адреса адаптера:</label>
         <span id="cur-mac-badge" style="background:rgba(88,166,255,0.2); color:var(--accent); padding:4px 10px; border-radius:12px; font-family:monospace; font-size:0.85rem; font-weight:700;">...</span>
       </div>
-      <p class="sub" style="margin-bottom:14px;">Керування апаратним MAC-адресом для зв'язку з додатками JBD / Xiaoxiang / Daly. Виберіть збережений або введіть власний.</p>
+      <p class="sub" style="margin-bottom:14px;">Керування апаратним MAC-адресом для зв'язку з додатками JBD / Daly / Ant / JK BMS. Виберіть збережений або введіть власний.</p>
 
       <label style="margin-bottom:8px;">Збережені профілі MAC:</label>
       <div id="mac-profiles-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:14px;">

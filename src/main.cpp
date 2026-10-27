@@ -39,7 +39,9 @@
 
 enum EmulatorProtocol {
     PROTO_JBD = 0,
-    PROTO_DALY = 1
+    PROTO_DALY = 1,
+    PROTO_ANT = 2,
+    PROTO_JK = 3
 };
 
 // PIN Code for JBD Authentication (System passkey & App-layer PIN)
@@ -48,6 +50,8 @@ enum EmulatorProtocol {
 // Target Bluetooth MAC Addresses (Separate MACs prevent GATT caching collisions)
 const uint8_t TARGET_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
 const uint8_t DALY_BT_MAC[6]   = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xD1};
+const uint8_t ANT_BT_MAC[6]    = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xE1};
+const uint8_t JK_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xF1};
 
 // ============================================================================
 // RGB LED Control with 50% Brightness Scaling
@@ -121,6 +125,14 @@ NimBLECharacteristic* pDalyFf02 = nullptr;
 NimBLECharacteristic* pDalyNusTx = nullptr;
 NimBLECharacteristic* pDalyNusRx = nullptr;
 
+// Ant BMS Characteristics
+NimBLECharacteristic* pAntNotifyChar = nullptr;
+NimBLECharacteristic* pAntWriteChar = nullptr;
+
+// JKBMS Characteristics
+NimBLECharacteristic* pJkNotifyChar = nullptr;
+NimBLECharacteristic* pJkWriteChar = nullptr;
+
 bool g_deviceConnected = false;
 unsigned long g_lastLogTime = 0;
 unsigned long g_lastSimTime = 0;
@@ -129,6 +141,35 @@ static Preferences s_prefs;
 static EmulatorProtocol g_proto = PROTO_JBD;
 static unsigned long g_bootTime = 0;
 static bool g_doubleResetPending = false;
+
+String getAntDeviceName() {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "ANT-BMS-%02uS", (unsigned int)g_bms.cell_count);
+    return String(buf);
+}
+
+String getJkDeviceName() {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "JK-B2A%uS20P", (unsigned int)g_bms.cell_count);
+    return String(buf);
+}
+
+String getActiveDeviceName() {
+    if (g_proto == PROTO_DALY) return String(DALY_DEVICE_NAME);
+    if (g_proto == PROTO_ANT)  return getAntDeviceName();
+    if (g_proto == PROTO_JK)   return getJkDeviceName();
+    return String(BLE_DEVICE_NAME);
+}
+
+const char* getProtoName(EmulatorProtocol p) {
+    switch (p) {
+        case PROTO_DALY: return "DALY BMS";
+        case PROTO_ANT:  return "ANT BMS";
+        case PROTO_JK:   return "JK BMS";
+        case PROTO_JBD:
+        default:         return "JBD BMS";
+    }
+}
 
 void checkBootButtonAtPowerOn() {
     pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
@@ -155,17 +196,19 @@ void checkBootButtonAtPowerOn() {
         if (armed) {
             s_prefs.begin("bms_emu", false);
             uint8_t cur = s_prefs.getUChar("proto", PROTO_JBD);
-            if (cur > PROTO_DALY) cur = PROTO_JBD;
-            uint8_t nextProto = (cur == PROTO_JBD) ? PROTO_DALY : PROTO_JBD;
+            if (cur > PROTO_JK) cur = PROTO_JBD;
+            uint8_t nextProto = (cur + 1) % 4;
             s_prefs.putUChar("proto", nextProto);
             s_prefs.putBool("dr_flag", false);
             s_prefs.end();
             
             Serial.printf("[SYSTEM] Mode changed at power-on -> %s! Restarting...\n",
-                          (nextProto == PROTO_DALY) ? "DALY BMS" : "JBD BMS");
+                          getProtoName((EmulatorProtocol)nextProto));
             for (int i = 0; i < 4; ++i) {
-                if (nextProto == PROTO_DALY) setRgbLed(120, 0, 120); // Magenta
-                else setRgbLed(120, 0, 0); // Red
+                if (nextProto == PROTO_DALY) setRgbLed(60, 0, 60);       // Magenta
+                else if (nextProto == PROTO_ANT) setRgbLed(0, 0, 60);     // Blue
+                else if (nextProto == PROTO_JK) setRgbLed(60, 30, 0);     // Orange
+                else setRgbLed(60, 0, 0);                                 // Red
                 delay(120);
                 setRgbLed(0, 0, 0);
                 delay(60);
@@ -179,15 +222,15 @@ void initDoubleResetAndMode() {
     s_prefs.begin("bms_emu", false);
     bool doubleReset = s_prefs.getBool("dr_flag", false);
     uint8_t savedProto = s_prefs.getUChar("proto", PROTO_JBD);
-    if (savedProto > PROTO_DALY) savedProto = PROTO_JBD;
+    if (savedProto > PROTO_JK) savedProto = PROTO_JBD;
 
     if (doubleReset) {
-        savedProto = (savedProto == PROTO_JBD) ? PROTO_DALY : PROTO_JBD;
+        savedProto = (savedProto + 1) % 4;
         s_prefs.putUChar("proto", savedProto);
         s_prefs.putBool("dr_flag", false);
         Serial.printf("\n=======================================================\n");
         Serial.printf("[SYSTEM] >> DOUBLE RESET DETECTED! Switched to: %s <<\n", 
-                      (savedProto == PROTO_DALY) ? "DALY BMS (DL-401804015491)" : "JBD BMS (BS-26A-072-005)");
+                      getProtoName((EmulatorProtocol)savedProto));
         Serial.printf("=======================================================\n\n");
     } else {
         s_prefs.putBool("dr_flag", true);
@@ -215,34 +258,11 @@ void setCellCount(uint8_t cnt) {
                   cnt, g_bms.pack_voltage_10mv / 100.0f);
 }
 
-void toggleEmulatorMode() {
-    uint8_t newProto = (g_proto == PROTO_JBD) ? PROTO_DALY : PROTO_JBD;
-    s_prefs.putUChar("proto", newProto);
-    s_prefs.putBool("dr_flag", false);
-    Serial.printf("\n[SYSTEM] Mode toggled -> Restarting as %s...\n", 
-                  (newProto == PROTO_DALY) ? "DALY BMS" : "JBD BMS");
-    for (int i = 0; i < 3; ++i) {
-        setRgbLed(50, 50, 0);
-        delay(100);
-        setRgbLed(0, 0, 0);
-        delay(50);
-    }
-    esp_restart();
-}
+void setEmulatorMode(EmulatorProtocol p);
 
-void setEmulatorMode(EmulatorProtocol p) {
-    if (g_proto == p) return;
-    s_prefs.putUChar("proto", (uint8_t)p);
-    s_prefs.putBool("dr_flag", false);
-    Serial.printf("\n[SYSTEM] Mode set to %s -> Restarting...\n", 
-                  (p == PROTO_DALY) ? "DALY BMS" : "JBD BMS");
-    for (int i = 0; i < 3; ++i) {
-        setRgbLed(50, 50, 0);
-        delay(100);
-        setRgbLed(0, 0, 0);
-        delay(50);
-    }
-    esp_restart();
+void toggleEmulatorMode() {
+    uint8_t newProto = (g_proto + 1) % 4;
+    setEmulatorMode((EmulatorProtocol)newProto);
 }
 
 // ============================================================================
@@ -294,6 +314,41 @@ int findStoredMacIndex(const uint8_t* mac) {
     return -1;
 }
 
+void setEmulatorMode(EmulatorProtocol p) {
+    if (g_proto == p) return;
+    s_prefs.begin("bms_emu", false);
+    s_prefs.putUChar("proto", (uint8_t)p);
+    s_prefs.putBool("dr_flag", false);
+
+    bool isDefaultMac = (memcmp(g_activeBtMac, TARGET_BT_MAC, 6) == 0 ||
+                         memcmp(g_activeBtMac, DALY_BT_MAC, 6) == 0 ||
+                         memcmp(g_activeBtMac, ANT_BT_MAC, 6) == 0 ||
+                         memcmp(g_activeBtMac, JK_BT_MAC, 6) == 0);
+    if (isDefaultMac) {
+        const uint8_t* nextMac = TARGET_BT_MAC;
+        if (p == PROTO_DALY) nextMac = DALY_BT_MAC;
+        else if (p == PROTO_ANT) nextMac = ANT_BT_MAC;
+        else if (p == PROTO_JK) nextMac = JK_BT_MAC;
+        memcpy(g_activeBtMac, nextMac, 6);
+        s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+        int idx = findStoredMacIndex(g_activeBtMac);
+        s_prefs.putChar("mac_act", (int8_t)idx);
+    }
+    s_prefs.end();
+
+    Serial.printf("\n[SYSTEM] Mode set to %s -> Restarting...\n", getProtoName(p));
+    for (int i = 0; i < 3; ++i) {
+        if (p == PROTO_DALY) setRgbLed(60, 0, 60);
+        else if (p == PROTO_ANT) setRgbLed(0, 0, 60);
+        else if (p == PROTO_JK) setRgbLed(60, 30, 0);
+        else setRgbLed(60, 0, 0);
+        delay(100);
+        setRgbLed(0, 0, 0);
+        delay(50);
+    }
+    esp_restart();
+}
+
 void saveMacConfigToNvs() {
     s_prefs.begin("bms_emu", false);
     s_prefs.putUChar("mac_cnt", g_storedMacCount);
@@ -330,7 +385,15 @@ void initMacConfig() {
         memcpy(g_storedMacs[2].mac, DALY_BT_MAC, 6);
         strncpy(g_storedMacs[2].label, "Daly Original", sizeof(g_storedMacs[2].label));
 
-        g_storedMacCount = 3;
+        // Item 3: Default Ant (A5:C2:3A:26:F2:E1)
+        memcpy(g_storedMacs[3].mac, ANT_BT_MAC, 6);
+        strncpy(g_storedMacs[3].label, "Ant Original", sizeof(g_storedMacs[3].label));
+
+        // Item 4: Default JK (A5:C2:3A:26:F2:F1)
+        memcpy(g_storedMacs[4].mac, JK_BT_MAC, 6);
+        strncpy(g_storedMacs[4].label, "JK Original", sizeof(g_storedMacs[4].label));
+
+        g_storedMacCount = 5;
         s_prefs.putUChar("mac_cnt", g_storedMacCount);
         for (uint8_t i = 0; i < g_storedMacCount; i++) {
             char keyM[12], keyL[12];
@@ -341,8 +404,12 @@ void initMacConfig() {
         }
 
         // Keep current default MAC as active initially
-        memcpy(g_activeBtMac, TARGET_BT_MAC, 6);
-        g_activeMacIndex = 0;
+        const uint8_t* defMac = TARGET_BT_MAC;
+        if (g_proto == PROTO_DALY) defMac = DALY_BT_MAC;
+        else if (g_proto == PROTO_ANT) defMac = ANT_BT_MAC;
+        else if (g_proto == PROTO_JK) defMac = JK_BT_MAC;
+        memcpy(g_activeBtMac, defMac, 6);
+        g_activeMacIndex = findStoredMacIndex(g_activeBtMac);
         s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
         s_prefs.putChar("mac_act", g_activeMacIndex);
     } else {
@@ -368,6 +435,32 @@ void initMacConfig() {
             snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
             s_prefs.putBytes(keyM, userAdapterMac, 6);
             s_prefs.putString(keyL, "Adapter 5C:A9");
+        }
+
+        // Ensure Ant Original profile is present in the list
+        if (findStoredMacIndex(ANT_BT_MAC) < 0 && g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, ANT_BT_MAC, 6);
+            strncpy(g_storedMacs[g_storedMacCount].label, "Ant Original", sizeof(g_storedMacs[g_storedMacCount].label));
+            g_storedMacCount++;
+            s_prefs.putUChar("mac_cnt", g_storedMacCount);
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", g_storedMacCount - 1);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
+            s_prefs.putBytes(keyM, ANT_BT_MAC, 6);
+            s_prefs.putString(keyL, "Ant Original");
+        }
+
+        // Ensure JK Original profile is present in the list
+        if (findStoredMacIndex(JK_BT_MAC) < 0 && g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, JK_BT_MAC, 6);
+            strncpy(g_storedMacs[g_storedMacCount].label, "JK Original", sizeof(g_storedMacs[g_storedMacCount].label));
+            g_storedMacCount++;
+            s_prefs.putUChar("mac_cnt", g_storedMacCount);
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", g_storedMacCount - 1);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
+            s_prefs.putBytes(keyM, JK_BT_MAC, 6);
+            s_prefs.putString(keyL, "JK Original");
         }
 
         if (s_prefs.getBytes("mac_cur", g_activeBtMac, 6) != 6) {
@@ -566,47 +659,39 @@ bool handleMacSerialCommand(const String& cmd) {
 // Multi-color Dynamic Status LED Indicator
 // ============================================================================
 void updateStatusLed() {
-    if (g_proto == PROTO_DALY) {
-        if (!g_deviceConnected) {
-            // 🟣 Purple/Magenta: Daly Advertising / Waiting for BLE client
+    if (!g_deviceConnected) {
+        if (g_proto == PROTO_DALY) {
+            // 🟣 Magenta: Daly Advertising / Waiting for BLE client
             setRgbLed(40, 0, 40);
+        } else if (g_proto == PROTO_ANT) {
+            // 🔵 Blue: Ant BMS Advertising / Waiting for BLE client
+            setRgbLed(0, 0, 40);
+        } else if (g_proto == PROTO_JK) {
+            // 🟠 Orange: JKBMS Advertising / Waiting for BLE client
+            setRgbLed(40, 20, 0);
         } else {
-            if (g_bms.protection_status != 0) {
-                // 🟡 Yellow: Protection / Alarm active
-                setRgbLed(40, 32, 0);
-            } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
-                // 🩵 Cyan: Active Charging (+25A)
-                setRgbLed(0, 35, 35);
-            } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
-                // 🔵 Blue: Daly Active Discharging (-17A)
-                setRgbLed(0, 10, 50);
-            } else {
-                // 🟢 Green: Standby / Idle (0A, connected)
-                setRgbLed(0, 35, 0);
-            }
-        }
-    } else {
-        if (!g_deviceConnected) {
             // 🔴 Red: JBD Advertising / Waiting for Bluetooth client
             setRgbLed(40, 0, 0);
+        }
+    } else {
+        // Connected to Client
+        if (g_bms.protection_status != 0) {
+            // 🟡 Yellow: Protection / Alarm active
+            setRgbLed(40, 32, 0);
+        } else if (g_bms.soc_percent >= 100) {
+            // ⚪ White: 100% Fully Charged
+            setRgbLed(25, 25, 25);
+        } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
+            // 🩵 Cyan: Active Charging (+25A)
+            setRgbLed(0, 35, 35);
+        } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
+            if (g_proto == PROTO_DALY) setRgbLed(0, 10, 50);
+            else if (g_proto == PROTO_ANT) setRgbLed(0, 25, 45);
+            else if (g_proto == PROTO_JK) setRgbLed(45, 12, 0);
+            else setRgbLed(40, 14, 0);
         } else {
-            // Connected to Client
-            if (g_bms.protection_status != 0) {
-                // 🟡 Yellow: Protection / Alarm active
-                setRgbLed(40, 32, 0);
-            } else if (g_bms.soc_percent >= 100) {
-                // ⚪ White: 100% Fully Charged
-                setRgbLed(25, 25, 25);
-            } else if (g_bms.mode == MODE_CHARGE && (g_bms.fet_status & 0x01)) {
-                // 🩵 Cyan: Active Charging (+25A)
-                setRgbLed(0, 35, 35);
-            } else if (g_bms.mode == MODE_DISCHARGE && (g_bms.fet_status & 0x02)) {
-                // 🟠 Orange: Active Discharging (-17A)
-                setRgbLed(40, 14, 0);
-            } else {
-                // 🟢 Green: Standby / Idle (0A, connected)
-                setRgbLed(0, 35, 0);
-            }
+            // 🟢 Green: Standby / Idle (0A, connected)
+            setRgbLed(0, 35, 0);
         }
     }
 }
@@ -1966,6 +2051,297 @@ class DalyWriteCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 // ============================================================================
+// Ant BMS Protocol Engine (140-Byte Telemetry Frame & Commands)
+// ============================================================================
+
+void buildAntTelemetryFrame(uint8_t* frame) {
+    memset(frame, 0, 140);
+    // Header
+    frame[0] = 0xAA;
+    frame[1] = 0x55;
+    frame[2] = 0xAA;
+    frame[3] = 0xFF;
+
+    // Bytes 4..67: Cell voltages 1..32 (16-bit Big-Endian in mV)
+    for (uint8_t i = 0; i < 32; ++i) {
+        uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0;
+        frame[4 + i * 2]     = (mv >> 8) & 0xFF;
+        frame[4 + i * 2 + 1] = mv & 0xFF;
+    }
+
+    // Bytes 70..73: Current (signed 32-bit Big-Endian, unit 0.1A)
+    int32_t cur01a = (int32_t)(g_bms.current_10ma / 10);
+    frame[70] = (cur01a >> 24) & 0xFF;
+    frame[71] = (cur01a >> 16) & 0xFF;
+    frame[72] = (cur01a >> 8)  & 0xFF;
+    frame[73] = cur01a & 0xFF;
+
+    // Byte 74: SOC (%)
+    frame[74] = g_bms.soc_percent;
+
+    // Bytes 75..78: Total Capacity in mAh (uint32 Big-Endian)
+    uint32_t totalMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
+    frame[75] = (totalMah >> 24) & 0xFF;
+    frame[76] = (totalMah >> 16) & 0xFF;
+    frame[77] = (totalMah >> 8)  & 0xFF;
+    frame[78] = totalMah & 0xFF;
+
+    // Bytes 79..82: Remaining Capacity in mAh (uint32 Big-Endian)
+    uint32_t remainMah = (uint32_t)g_bms.remain_cap_10mah * 10;
+    frame[79] = (remainMah >> 24) & 0xFF;
+    frame[80] = (remainMah >> 16) & 0xFF;
+    frame[81] = (remainMah >> 8)  & 0xFF;
+    frame[82] = remainMah & 0xFF;
+
+    // Bytes 83..86: Cycle Capacity in mAh
+    uint32_t cycleMah = (uint32_t)g_bms.cycle_cap_10mah * 10;
+    frame[83] = (cycleMah >> 24) & 0xFF;
+    frame[84] = (cycleMah >> 16) & 0xFF;
+    frame[85] = (cycleMah >> 8)  & 0xFF;
+    frame[86] = cycleMah & 0xFF;
+
+    // Bytes 87..88: Cycle Count
+    frame[87] = (g_bms.cycle_count >> 8) & 0xFF;
+    frame[88] = g_bms.cycle_count & 0xFF;
+
+    // Bytes 89..90: Pack Voltage in 0.1V
+    uint16_t pack01v = g_bms.pack_voltage_10mv / 10;
+    frame[89] = (pack01v >> 8) & 0xFF;
+    frame[90] = pack01v & 0xFF;
+
+    // Temperatures (°C signed int16 Big-Endian)
+    int16_t tMos = (int16_t)((g_bms.ntc3_temp_01k - 2731) / 10);
+    frame[91] = (tMos >> 8) & 0xFF;
+    frame[92] = tMos & 0xFF;
+
+    int16_t t1 = (int16_t)((g_bms.ntc1_temp_01k - 2731) / 10);
+    frame[93] = (t1 >> 8) & 0xFF;
+    frame[94] = t1 & 0xFF;
+
+    int16_t t2 = (int16_t)((g_bms.ntc2_temp_01k - 2731) / 10);
+    frame[95] = (t2 >> 8) & 0xFF;
+    frame[96] = t2 & 0xFF;
+
+    // Switches
+    frame[101] = (g_bms.fet_status & 0x01) ? 1 : 0;
+    frame[102] = (g_bms.fet_status & 0x02) ? 1 : 0;
+    frame[103] = (g_bms.fet_status & 0x01) ? 1 : 0; // Charge FET
+    frame[104] = (g_bms.fet_status & 0x02) ? 1 : 0; // Discharge FET
+    frame[105] = 1;                                 // Balancer
+
+    // Bytes 138..139: Checksum (sum of bytes 4..137)
+    uint16_t checksum = 0;
+    for (int i = 4; i < 138; ++i) checksum += frame[i];
+    frame[138] = (checksum >> 8) & 0xFF;
+    frame[139] = checksum & 0xFF;
+}
+
+void sendAntTelemetry() {
+    if (!g_deviceConnected || !pAntNotifyChar) return;
+    uint8_t frame[140];
+    buildAntTelemetryFrame(frame);
+    pAntNotifyChar->notify(frame, sizeof(frame));
+}
+
+class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        std::string val = pCharacteristic->getValue();
+        if (val.empty()) return;
+        const uint8_t* data = (const uint8_t*)val.data();
+        size_t len = val.length();
+
+        // 1. Query: 0xDB 0xDB or 0x5A 0x5A
+        if (len >= 2 && ((data[0] == 0xDB && data[1] == 0xDB) || (data[0] == 0x5A && data[1] == 0x5A))) {
+            sendAntTelemetry();
+            return;
+        }
+
+        // 2. Switch command: 0xA5 0xA5 <cmd> <state> 0x00 0xAA
+        if (len >= 6 && data[0] == 0xA5 && data[1] == 0xA5) {
+            uint8_t cmdType = data[2];
+            uint8_t state = data[3];
+            if (cmdType == 0x01) {
+                if (state) g_bms.fet_status |= 0x01;
+                else g_bms.fet_status &= ~0x01;
+                Serial.printf("[ANT] Charge FET -> %s\n", state ? "ON" : "OFF");
+            } else if (cmdType == 0x02) {
+                if (state) g_bms.fet_status |= 0x02;
+                else g_bms.fet_status &= ~0x02;
+                Serial.printf("[ANT] Discharge FET -> %s\n", state ? "ON" : "OFF");
+            } else if (cmdType == 0x03) {
+                Serial.printf("[ANT] Balancer Switch -> %s\n", state ? "ON" : "OFF");
+            }
+            updateStatusLed();
+            sendAntTelemetry();
+            return;
+        }
+
+        sendAntTelemetry();
+    }
+};
+
+// ============================================================================
+// JKBMS Protocol Engine (JK02 300-Byte Live Cell Info & Settings Frames)
+// ============================================================================
+
+void buildJkCellInfoFrame(uint8_t* frame) {
+    memset(frame, 0, 300);
+    // Header
+    frame[0] = 0x55;
+    frame[1] = 0xAA;
+    frame[2] = 0xEB;
+    frame[3] = 0x90;
+    frame[4] = 0x02; // Frame Type: Cell Info
+    frame[5] = 0x00;
+
+    // Cell voltages 1..32 (bytes 6 + i*2: Little-Endian uint16 in mV)
+    for (uint8_t i = 0; i < 32; ++i) {
+        uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0;
+        frame[6 + i * 2]     = mv & 0xFF;
+        frame[6 + i * 2 + 1] = (mv >> 8) & 0xFF;
+    }
+
+    // Total Voltage (bytes 118..121: uint32 Little-Endian in mV)
+    uint32_t totalMv = 0;
+    for (uint8_t i = 0; i < g_bms.cell_count && i < 32; ++i) totalMv += g_bms.cell_mv[i];
+    frame[118] = totalMv & 0xFF;
+    frame[119] = (totalMv >> 8) & 0xFF;
+    frame[120] = (totalMv >> 16) & 0xFF;
+    frame[121] = (totalMv >> 24) & 0xFF;
+
+    // Current (bytes 126..129: signed int32 Little-Endian in mA, + = Charge, - = Discharge)
+    int32_t curMa = (int32_t)g_bms.current_10ma * 10;
+    frame[126] = curMa & 0xFF;
+    frame[127] = (curMa >> 8) & 0xFF;
+    frame[128] = (curMa >> 16) & 0xFF;
+    frame[129] = (curMa >> 24) & 0xFF;
+
+    // Temperatures (int16 Little-Endian in 0.1°C)
+    int16_t t1 = (int16_t)(g_bms.ntc1_temp_01k - 2731);
+    frame[130] = t1 & 0xFF;
+    frame[131] = (t1 >> 8) & 0xFF;
+
+    int16_t t2 = (int16_t)(g_bms.ntc2_temp_01k - 2731);
+    frame[132] = t2 & 0xFF;
+    frame[133] = (t2 >> 8) & 0xFF;
+
+    int16_t tMos = (int16_t)(g_bms.ntc3_temp_01k - 2731);
+    frame[134] = tMos & 0xFF;
+    frame[135] = (tMos >> 8) & 0xFF;
+
+    // Balancer current (138..139) & state (140)
+    frame[138] = 0;
+    frame[139] = 0;
+    frame[140] = 0;
+
+    // SOC (%)
+    frame[141] = g_bms.soc_percent;
+
+    // Capacity remaining in mAh (142..145)
+    uint32_t remMah = (uint32_t)g_bms.remain_cap_10mah * 10;
+    frame[142] = remMah & 0xFF;
+    frame[143] = (remMah >> 8) & 0xFF;
+    frame[144] = (remMah >> 16) & 0xFF;
+    frame[145] = (remMah >> 24) & 0xFF;
+
+    // Capacity nominal in mAh (146..149)
+    uint32_t nomMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
+    frame[146] = nomMah & 0xFF;
+    frame[147] = (nomMah >> 8) & 0xFF;
+    frame[148] = (nomMah >> 16) & 0xFF;
+    frame[149] = (nomMah >> 24) & 0xFF;
+
+    // Cycle count (150..153)
+    uint32_t cycles = g_bms.cycle_count;
+    frame[150] = cycles & 0xFF;
+    frame[151] = (cycles >> 8) & 0xFF;
+    frame[152] = (cycles >> 16) & 0xFF;
+    frame[153] = (cycles >> 24) & 0xFF;
+
+    // Switches
+    frame[166] = (g_bms.fet_status & 0x01) ? 1 : 0; // Charge MOS
+    frame[167] = (g_bms.fet_status & 0x02) ? 1 : 0; // Discharge MOS
+
+    // Checksum (byte 299: sum of bytes 0..298)
+    uint8_t crc = 0;
+    for (int i = 0; i < 299; ++i) crc += frame[i];
+    frame[299] = crc;
+}
+
+void buildJkSettingsFrame(uint8_t* frame) {
+    memset(frame, 0, 130);
+    frame[0] = 0x55;
+    frame[1] = 0xAA;
+    frame[2] = 0xEB;
+    frame[3] = 0x90;
+    frame[4] = 0x01; // Frame Type: Settings / Info
+
+    frame[118] = (g_bms.fet_status & 0x01) ? 1 : 0;
+    frame[122] = (g_bms.fet_status & 0x02) ? 1 : 0;
+    frame[126] = 1;
+
+    uint8_t crc = 0;
+    for (int i = 0; i < 129; ++i) crc += frame[i];
+    frame[129] = crc;
+}
+
+void sendJkCellInfo() {
+    if (!g_deviceConnected || !pJkNotifyChar) return;
+    uint8_t frame[300];
+    buildJkCellInfoFrame(frame);
+    pJkNotifyChar->notify(frame, sizeof(frame));
+}
+
+void sendJkSettings() {
+    if (!g_deviceConnected || !pJkNotifyChar) return;
+    uint8_t frame[130];
+    buildJkSettingsFrame(frame);
+    pJkNotifyChar->notify(frame, sizeof(frame));
+}
+
+class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        std::string val = pCharacteristic->getValue();
+        if (val.empty()) return;
+        const uint8_t* data = (const uint8_t*)val.data();
+        size_t len = val.length();
+
+        if (len >= 5 && data[0] == 0xAA && data[1] == 0x55 && data[2] == 0x90 && data[3] == 0xEB) {
+            uint8_t cmd = data[4];
+            if (cmd == 0x96) {
+                sendJkCellInfo();
+                return;
+            } else if (cmd == 0x97) {
+                sendJkSettings();
+                return;
+            } else if (cmd == 0x1D) {
+                uint8_t st = (len >= 7) ? data[6] : 1;
+                if (st) g_bms.fet_status |= 0x01;
+                else g_bms.fet_status &= ~0x01;
+                Serial.printf("[JK] Charge MOS -> %s\n", st ? "ON" : "OFF");
+                updateStatusLed();
+                sendJkCellInfo();
+                return;
+            } else if (cmd == 0x1E) {
+                uint8_t st = (len >= 7) ? data[6] : 1;
+                if (st) g_bms.fet_status |= 0x02;
+                else g_bms.fet_status &= ~0x02;
+                Serial.printf("[JK] Discharge MOS -> %s\n", st ? "ON" : "OFF");
+                updateStatusLed();
+                sendJkCellInfo();
+                return;
+            } else if (cmd == 0x1F) {
+                Serial.println("[JK] Balancer Switch toggled");
+                sendJkCellInfo();
+                return;
+            }
+        }
+
+        sendJkCellInfo();
+    }
+};
+
+// ============================================================================
 // Wi-Fi AP & Station Web Dashboard Engine
 // ============================================================================
 static WebServer g_httpServer(80);
@@ -2032,8 +2408,12 @@ void setupWebServerRoutes() {
     // API: Live Telemetry Data
     g_httpServer.on("/api/data", HTTP_GET, []() {
         JsonDocument doc;
-        doc["proto"] = (g_proto == PROTO_DALY) ? "DALY" : "JBD";
-        doc["device_name"] = (g_proto == PROTO_DALY) ? DALY_DEVICE_NAME : BLE_DEVICE_NAME;
+        const char* protoStr = "JBD";
+        if (g_proto == PROTO_DALY) protoStr = "DALY";
+        else if (g_proto == PROTO_ANT) protoStr = "ANT";
+        else if (g_proto == PROTO_JK) protoStr = "JK";
+        doc["proto"] = protoStr;
+        doc["device_name"] = getActiveDeviceName();
         doc["cell_count"] = g_bms.cell_count;
         doc["pack_voltage"] = g_bms.pack_voltage_10mv / 100.0f;
         doc["current"] = g_bms.current_10ma / 100.0f;
@@ -2107,6 +2487,12 @@ void setupWebServerRoutes() {
         if (p == "daly" && g_proto != PROTO_DALY) {
             delay(200);
             setEmulatorMode(PROTO_DALY);
+        } else if (p == "ant" && g_proto != PROTO_ANT) {
+            delay(200);
+            setEmulatorMode(PROTO_ANT);
+        } else if (p == "jk" && g_proto != PROTO_JK) {
+            delay(200);
+            setEmulatorMode(PROTO_JK);
         } else if (p == "jbd" && g_proto != PROTO_JBD) {
             delay(200);
             setEmulatorMode(PROTO_JBD);
@@ -2422,13 +2808,16 @@ void setup() {
     initMacConfig();
 
     // Flash LED 3 times on boot to indicate selected mode
-    // JBD: 3 Red flashes
-    // Daly: 3 Magenta flashes
+    // JBD: 3 Red flashes | Daly: 3 Magenta flashes | Ant: 3 Blue flashes | JK: 3 Orange flashes
     for (int i = 0; i < 3; ++i) {
         if (g_proto == PROTO_DALY) {
-            setRgbLed(60, 0, 60); // Magenta
+            setRgbLed(60, 0, 60);       // Magenta
+        } else if (g_proto == PROTO_ANT) {
+            setRgbLed(0, 0, 60);        // Blue
+        } else if (g_proto == PROTO_JK) {
+            setRgbLed(60, 30, 0);       // Orange
         } else {
-            setRgbLed(60, 0, 0);  // Red
+            setRgbLed(60, 0, 0);        // Red
         }
         delay(120);
         setRgbLed(0, 0, 0);
@@ -2439,6 +2828,12 @@ void setup() {
     if (g_proto == PROTO_DALY) {
         Serial.println("     ESP32-C6 DALY Smart BMS BLE Emulator             ");
         Serial.printf("Device Name: %s\n", DALY_DEVICE_NAME);
+    } else if (g_proto == PROTO_ANT) {
+        Serial.println("     ESP32-C6 Ant BMS BLE Emulator                    ");
+        Serial.printf("Device Name: %s\n", getAntDeviceName().c_str());
+    } else if (g_proto == PROTO_JK) {
+        Serial.println("     ESP32-C6 JKBMS BLE Emulator (JK02 Protocol)      ");
+        Serial.printf("Device Name: %s\n", getJkDeviceName().c_str());
     } else {
         Serial.println("   ESP32-C6 JBD BMS BLE Emulator (DB24SF01 / 8S200A)   ");
         Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
@@ -2639,6 +3034,121 @@ void setup() {
         updateStatusLed();
         Serial.printf("[BLE] Advertising started successfully as '%s'.\n", DALY_DEVICE_NAME);
         Serial.println("[BLE] Ready for connection from Daly BMS App or ESP32 Universal Monitor...");
+    } else if (g_proto == PROTO_ANT) {
+        // Initialize NimBLE Device for Ant BMS
+        String antName = getAntDeviceName();
+        NimBLEDevice::init(antName.c_str());
+        NimBLEDevice::setMTU(512);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+        NimBLEDevice::setSecurityAuth(false, false, false);
+
+        Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
+
+        pServer = NimBLEDevice::createServer();
+        pServer->setCallbacks(new ServerCallbacks());
+
+        // Primary Service 0xFFE0
+        NimBLEService* pAntService = pServer->createService(NimBLEUUID((uint16_t)0xFFE0));
+        pAntNotifyChar = pAntService->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFE1),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pAntNotifyChar->setCallbacks(new AntWriteCallbacks());
+
+        pAntWriteChar = pAntService->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFE2),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pAntWriteChar->setCallbacks(new AntWriteCallbacks());
+
+        // Secondary Ant profile 0xFFF0
+        NimBLEService* pAntFff0 = pServer->createService(NimBLEUUID((uint16_t)0xFFF0));
+        NimBLECharacteristic* pAntFff1 = pAntFff0->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFF1),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pAntFff1->setCallbacks(new AntWriteCallbacks());
+
+        pServer->start();
+
+        // Advertising for Ant BMS
+        NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+        NimBLEAdvertisementData advData;
+        advData.setFlags(0x06);
+        advData.setName(antName.c_str());
+        advData.setCompleteServices(NimBLEUUID((uint16_t)0xFFE0));
+
+        NimBLEAdvertisementData scanData;
+        scanData.setCompleteServices(NimBLEUUID((uint16_t)0xFFF0));
+        scanData.setManufacturerData(std::string((char*)activeMac, 6));
+
+        pAdvertising->setAdvertisementData(advData);
+        pAdvertising->setScanResponseData(scanData);
+        pAdvertising->setMinInterval(32);
+        pAdvertising->setMaxInterval(64);
+        pAdvertising->start();
+
+        updateStatusLed();
+        Serial.printf("[BLE] Advertising started successfully as '%s'.\n", antName.c_str());
+        Serial.println("[BLE] Ready for connection from Ant BMS App or ESP32 Universal Monitor...");
+    } else if (g_proto == PROTO_JK) {
+        // Initialize NimBLE Device for JKBMS
+        String jkName = getJkDeviceName();
+        NimBLEDevice::init(jkName.c_str());
+        NimBLEDevice::setMTU(512);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+        NimBLEDevice::setSecurityAuth(false, false, false);
+
+        Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
+
+        pServer = NimBLEDevice::createServer();
+        pServer->setCallbacks(new ServerCallbacks());
+
+        // Primary JK Service 0xFFE0
+        NimBLEService* pJkService = pServer->createService(NimBLEUUID((uint16_t)0xFFE0));
+        pJkNotifyChar = pJkService->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFE1),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pJkNotifyChar->setCallbacks(new JkWriteCallbacks());
+
+        pJkWriteChar = pJkService->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFE2),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pJkWriteChar->setCallbacks(new JkWriteCallbacks());
+
+        // Device Information Service 0x180A (Essential for iOS & JKBMS apps)
+        NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ)->setValue(jkName.c_str());
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ)->setValue("JK");
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ)->setValue("JK02_V11.28");
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ)->setValue("JK-B2A24S20P");
+
+        pServer->start();
+
+        // Advertising for JKBMS
+        NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+        NimBLEAdvertisementData advData;
+        advData.setFlags(0x06);
+        advData.setName(jkName.c_str());
+        advData.setCompleteServices(NimBLEUUID((uint16_t)0xFFE0));
+
+        NimBLEAdvertisementData scanData;
+        scanData.setManufacturerData(std::string((char*)activeMac, 6));
+
+        pAdvertising->setAdvertisementData(advData);
+        pAdvertising->setScanResponseData(scanData);
+        pAdvertising->setMinInterval(32);
+        pAdvertising->setMaxInterval(64);
+        pAdvertising->start();
+
+        updateStatusLed();
+        Serial.printf("[BLE] Advertising started successfully as '%s'.\n", jkName.c_str());
+        Serial.println("[BLE] Ready for connection from JKBMS App, ESPHome, or ESP32 Universal Monitor...");
     } else {
         // Initialize NimBLE Device for JBD
         NimBLEDevice::init(BLE_DEVICE_NAME);
@@ -2898,6 +3408,20 @@ void loop() {
         sendDalyModbusResponseD2(0x0000, s_lastDalyReadCount);
     }
 
+    // In Ant BMS mode, periodically push 140-byte frame (every 1000ms)
+    static unsigned long s_lastAntPush = 0;
+    if (g_proto == PROTO_ANT && g_deviceConnected && (now - s_lastAntPush >= 1000)) {
+        s_lastAntPush = now;
+        sendAntTelemetry();
+    }
+
+    // In JKBMS mode, periodically push 300-byte cell info frame (every 1500ms)
+    static unsigned long s_lastJkPush = 0;
+    if (g_proto == PROTO_JK && g_deviceConnected && (now - s_lastJkPush >= 1500)) {
+        s_lastJkPush = now;
+        sendJkCellInfo();
+    }
+
     // Periodic telemetry log (every 2000ms)
     if (now - g_lastLogTime >= 2000) {
         g_lastLogTime = now;
@@ -2911,7 +3435,7 @@ void loop() {
                               ((g_bms.current_10ma < -50) ? "DISCHARGING (-)" : "STANDBY (IDLE)");
 
         Serial.printf("[STATUS] Proto: %s | Cells: %uS | WiFi: %s (%s) | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
-                      (g_proto == PROTO_DALY) ? "DALY" : "JBD",
+                      getProtoName(g_proto),
                       g_bms.cell_count,
                       g_isApMode ? "AP" : "STA",
                       g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
@@ -2934,6 +3458,10 @@ void loop() {
                 setEmulatorMode(PROTO_JBD);
             } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
                 setEmulatorMode(PROTO_DALY);
+            } else if (cmd == "a" || cmd == "ant" || cmd == "ant-bms") {
+                setEmulatorMode(PROTO_ANT);
+            } else if (cmd == "k" || cmd == "jk" || cmd == "jkbms") {
+                setEmulatorMode(PROTO_JK);
             } else if (cmd == "w" || cmd == "wifi") {
                 Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
                               g_isApMode ? "AP (BMS-Emulator-Setup)" : "STA",
@@ -2971,11 +3499,16 @@ void loop() {
                 }
             } else if (cmd == "t" || cmd == "telemetry") {
                 Serial.printf(">>> Manual Telemetry Burst (proto=%s, connected=%d) <<<\n",
-                              (g_proto == PROTO_DALY) ? "DALY" : "JBD", g_deviceConnected);
+                              getProtoName(g_proto), g_deviceConnected);
                 if (g_proto == PROTO_DALY) {
                     sendDalyModbusStatusD2(false);
                     sendDalyP81Cells();
                     sendAllDalyTelemetry();
+                } else if (g_proto == PROTO_ANT) {
+                    sendAntTelemetry();
+                } else if (g_proto == PROTO_JK) {
+                    sendJkCellInfo();
+                    sendJkSettings();
                 }
             } else if (cmd == "1" || cmd == "dis" || cmd == "discharge") {
                 g_bms.mode = MODE_DISCHARGE;
@@ -3017,7 +3550,9 @@ void loop() {
                 Serial.println("  'mac reset'          : Reset stored MAC profiles to factory defaults");
                 Serial.println("  'j' or 'jbd'         : Switch to JBD BMS emulator");
                 Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
-                Serial.println("  'm' or 'toggle'      : Toggle BMS emulator mode");
+                Serial.println("  'a' or 'ant'         : Switch to ANT BMS emulator");
+                Serial.println("  'k' or 'jk'          : Switch to JKBMS (JK02) emulator");
+                Serial.println("  'm' or 'toggle'      : Cycle through BMS emulator modes");
                 Serial.println("  '4s' / '8s' / '16s'  : Set battery series count (or 'cells <N>', 3..32)");
                 Serial.println("  'w' or 'wifi'        : Show Wi-Fi status, IP, SSID & signal");
                 Serial.println("  'wifi <SSID> <PASS>' : Connect to local Wi-Fi network");

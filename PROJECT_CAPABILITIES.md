@@ -1,4 +1,4 @@
-# 🔋 Project Capabilities: JBD & Daly BMS BLE Emulator (ESP32-C6 / ESP32-S3)
+# 🔋 Project Capabilities: Universal Quad-BMS BLE Emulator (JBD, Daly, Ant & JK) (ESP32-C6 / ESP32-S3)
 
 <p align="center">
   <a href="PROJECT_CAPABILITIES.md"><b>English Spec</b></a> |
@@ -11,11 +11,13 @@
 
 ## 📌 1. Project Overview
 
-The **JBD & Daly BMS Emulator** is a standalone, full-featured hardware-in-the-loop (HIL) battery management system (BMS) emulator powered by the **ESP32-C6** RISC-V microcontroller (also fully compatible with **ESP32-S3**).
+The **Universal Quad-BMS Emulator** is a standalone, full-featured hardware-in-the-loop (HIL) battery management system (BMS) emulator powered by the **ESP32-C6** RISC-V microcontroller (also fully compatible with **ESP32-S3**).
 
-The emulator implements a **Dual-Protocol Engine** capable of dynamically switching between and accurately mimicking the two most popular smart BMS standards in the renewable energy and light EV markets:
-1. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS**
-2. **Daly Smart BMS (DL-xxxx series)**
+The emulator implements a **Quad-Protocol Engine** capable of dynamically switching between and accurately mimicking the 4 most popular smart BMS standards in the renewable energy and light EV markets:
+1. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS** (`BS-26A-072-005`)
+2. **Daly Smart BMS (DL-xxxx series)** (`DL-401804015491`)
+3. **Ant BMS (ANT-BMS series)** (dynamic `ANT-BMS-08S`, `ANT-BMS-16S`)
+4. **JKBMS (JiKong JK02 protocol)** (dynamic `JK-B2A8S20P`, `JK-B2A16S20P`)
 
 This project was engineered for rapid bench testing, protocol debugging, and calibration of diagnostic gateways (such as the ESP32 Universal Monitor / Tailscale Probe), solar hybrid inverters (Growatt, Deye, Datouboss, Sandisolar, Victron), Home Assistant / ESPHome automations, and official mobile apps without connecting to hazardous, high-voltage physical battery packs.
 
@@ -34,14 +36,18 @@ flowchart TD
         WIFI["Wi-Fi 6 Web Server\n(AP + STA / mDNS)"]
     end
 
-    subgraph Modes ["Dual-Protocol Emulation Modes"]
+    subgraph Modes ["Quad-Protocol Emulation Modes"]
         JBD["JBD / Xiaoxiang Mode\n(MAC: A5:C2:3A:26:F2:C2)"]
         DALY["Daly Smart BMS Mode\n(MAC: A5:C2:3A:26:F2:D1)"]
+        ANT["Ant BMS Mode\n(MAC: A5:C2:3A:26:F2:E1)"]
+        JK["JKBMS Mode (JK02)\n(MAC: A5:C2:3A:26:F2:F1)"]
     end
 
     subgraph Clients ["Supported Client Ecosystem"]
         AppJBD["JBD BMS / Xiaoxiang App\n(iOS / Android)"]
         AppDaly["Smart BMS App (Daly)\n(iOS / Android)"]
+        AppAnt["Ant BMS App (MAYA)\n(iOS / Android)"]
+        AppJK["JKBMS App / ESPHome\n(iOS / Android)"]
         WebUI["Web Dashboard (Browser)\nhttp://bms-emulator.local"]
         Probe["Universal BMS Monitor\n(ESP32-S3 Tailscale Probe)"]
         HA["ESPHome / Home Assistant"]
@@ -49,25 +55,41 @@ flowchart TD
 
     Core --> JBD
     Core --> DALY
+    Core --> ANT
+    Core --> JK
     Core --> WIFI
     WIFI --> WebUI
     JBD --> AppJBD
     JBD --> Probe
     DALY --> AppDaly
     DALY --> Probe
-    DALY --> HA
+    ANT --> AppAnt
+    ANT --> Probe
+    JK --> AppJK
+    JK --> Probe
+    JK --> HA
 ```
 
 ---
 
-## 🔄 3. On-The-Fly Mode Switching (JBD ↔ Daly)
+## 🔄 3. On-The-Fly Mode Switching (JBD ↔ Daly ↔ Ant ↔ JK)
 
-Switching between JBD and Daly protocols is supported via three methods:
+Switching between the four BMS protocols is supported via multiple intuitive methods:
 
-1. **Hardware Double Reset (RST Button Double-Click)**:
-   - Double-clicking the physical **RST / RESET** button on the ESP32-C6 board within 1.5 seconds instantly toggles the active protocol.
-   - The selected protocol mode is persisted in **NVS (Non-Volatile Storage)** and automatically restored across power cycles.
-2. **Interactive Serial Commands (USB-CDC 115200 baud)**:
+1. **Hardware Button (BOOT / GPIO 9)**:
+   - Long-press (> 1.5 seconds) while running cycles through the 4 modes: **JBD → Daly → Ant → JK → JBD**.
+   - Holding the button during power-on / reset also cycles the mode.
+2. **Hardware Double Reset (RST Button Double-Click)**:
+   - Double-clicking the physical **RST / RESET** button on the ESP32-C6 board within 2.5 seconds cycles to the next protocol.
+   - The selected protocol is persisted in **NVS (Non-Volatile Storage)** and automatically restored across power cycles.
+3. **Interactive Serial Commands (USB-CDC 115200 baud)**:
+   - `j` or `jbd`: switch to JBD BMS mode.
+   - `y` or `daly`: switch to Daly Smart BMS mode.
+   - `a` or `ant`: switch to Ant BMS mode.
+   - `k` or `jk`: switch to JKBMS (JK02) mode.
+   - `m` or `toggle`: cycle to the next protocol.
+4. **Web Management Dashboard & REST API**:
+   - 1-click switcher buttons in the Web UI, or a `POST /api/set-proto` request (`{"proto": "ant"}`).
    - `m` or `M` — Toggle protocol mode (JBD $\leftrightarrow$ DALY).
    - `j` or `J` — Force **JBD BMS** mode.
    - `y` or `Y` — Force **DALY BMS** mode.
@@ -203,48 +225,109 @@ Engineered for the **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscal
 
 ---
 
-## 🎨 7. Hardware Visual Indication (WS2812B RGB LED @ GPIO 8)
+## 🐜 7. Ant BMS Emulation Specification
+
+* **Device Name**: `ANT-BMS-%02uS` (e.g. `ANT-BMS-08S`, `ANT-BMS-16S`) | **Default MAC**: `A5:C2:3A:26:F2:E1`
+* **GATT Profile**: Service `0xFFE0` (Notify `0xFFE1`, Write `0xFFE2`) and secondary mirror service `0xFFF0` (Notify `0xFFF1`).
+* **Telemetry Frame Layout (140 Bytes)**:
+  * Header: `0xAA 0x55 0xAA 0xFF`
+  * Bytes `4..67`: 32 cell voltages (uint16 Big-Endian in mV).
+  * Bytes `70..73`: Pack current (signed int32 Big-Endian, unit 0.1A).
+  * Byte `74`: SOC ($0\dots 100\%$).
+  * Bytes `75..78`: Total capacity in mAh (uint32 Big-Endian).
+  * Bytes `79..82`: Remaining capacity in mAh (uint32 Big-Endian).
+  * Bytes `83..86`: Cycle capacity in mAh.
+  * Bytes `87..88`: Cycle count.
+  * Bytes `89..90`: Pack voltage in 0.1V.
+  * Bytes `91..96`: NTC temperatures (MOS temp, Sensor 1, Sensor 2 in °C signed int16 Big-Endian).
+  * Byte `101` / `102`: Charge & Discharge MOS status ($1=\text{ON}, 0=\text{OFF}$).
+  * Byte `103` / `104` / `105`: Charge, Discharge, and Balancer switches.
+  * Bytes `138..139`: Checksum (uint16 Big-Endian sum of bytes 4..137).
+* **Handshake & Commands**:
+  * Polling trigger: `0xDB 0xDB` or `0x5A 0x5A`.
+  * Remote FET control: `0xA5 0xA5 <cmd> <state> 0x00 0xAA` (`cmd=0x01` Charge, `cmd=0x02` Discharge, `cmd=0x03` Balancer).
+
+---
+
+## ⚡ 8. JKBMS (JiKong JK02) Emulation Specification
+
+* **Device Name**: `JK-B2A%uS20P` (e.g. `JK-B2A8S20P`, `JK-B2A16S20P`) | **Default MAC**: `A5:C2:3A:26:F2:F1`
+* **GATT Profile**:
+  * Primary Service `0xFFE0` (Notify `0xFFE1`, Write `0xFFE2`).
+  * Device Information Service `0x180A` (Model `0x2A24`, Manufacturer `0x2A29`, Firmware `0x2A26`, Hardware `0x2A27`).
+* **Live CellInfo Frame Layout (300 Bytes)**:
+  * Header: `0x55 0xAA 0xEB 0x90 0x02`
+  * Bytes `6..69`: 32 cell voltages (uint16 Little-Endian in mV).
+  * Bytes `118..121`: Total pack voltage (uint32 Little-Endian in mV).
+  * Bytes `126..129`: Current (signed int32 Little-Endian in mA, positive = charge, negative = discharge).
+  * Bytes `130..135`: NTC1, NTC2, MOS temperatures (int16 Little-Endian in 0.1°C).
+  * Bytes `138..140`: Balancing current (mA) and balancer state.
+  * Byte `141`: Battery SOC ($0\dots 100\%$).
+  * Bytes `142..149`: Remaining and nominal capacity in mAh (uint32 Little-Endian).
+  * Bytes `150..153`: Cycle count (uint32 Little-Endian).
+  * Byte `166` / `167`: Charge and Discharge MOS switch states.
+  * Byte `299`: Checksum (sum of bytes 0..298 & 0xFF).
+* **Commands & Settings**:
+  * Query CellInfo: `AA 55 90 EB 96 00 ...`
+  * Query Settings: `AA 55 90 EB 97 00 ...`
+  * Switch register writes: `0x1D` (Charge MOS), `0x1E` (Discharge MOS), `0x1F` (Balancer).
+
+---
+
+## 🎨 9. Hardware Visual Indication (WS2812B RGB LED @ GPIO 8)
 
 The onboard WS2812B addressable LED indicates real-time operational states:
 
 | LED Color | Emulator Status |
 | :--- | :--- |
-| 🔴 **Red** | Standby / BLE Advertising (waiting for connection) |
-| 🟠 **Orange** | Active Discharge under load (Discharge, $-17.00\text{ A}$) |
-| 🩵 **Cyan** | Active Battery Charge (Charge, $+25.00\text{ A}$) |
-| 🟢 **Green** | Standby / Idle ($0.00\text{ A}$, FETs closed) |
+| 🔴 **Red** | JBD BMS Advertising (waiting for connection) |
+| 🟣 **Magenta** | Daly Smart BMS Advertising (waiting for connection) |
+| 🔵 **Blue** | Ant BMS Advertising (waiting for connection) |
+| 🟠 **Orange** | JKBMS Advertising (waiting for connection) |
+| 🟢 **Green** | Standby / Idle ($0.00\text{ A}$, connected) |
+| 🩵 **Cyan** | Active Battery Charge ($+25.00\text{ A}$) |
+| 🔵 / 🟠 | Active Discharge under load ($-17.00\text{ A}$) |
 | ⚪ **White** | Fully Charged ($100\%\text{ SOC}$) |
 | 🟡 **Yellow** | Protection / Alarm triggered |
 
 ---
 
-## 💻 8. Serial CLI Command Reference (USB 115200 baud)
+## 💻 10. Serial CLI Command Reference (USB 115200 baud)
 
 Interactive control is available via any serial terminal connected to the board:
 
-* `m` or `M` — Toggle protocol mode (**JBD** $\leftrightarrow$ **DALY**).
-* `j` or `J` — Force **JBD BMS** mode.
-* `y` or `Y` — Force **DALY BMS** mode.
-* `1` or `d` — Enable **Discharge** mode ($-17.00\text{ A}$).
-* `2` or `c` — Enable **Charge** mode ($+25.00\text{ A}$).
-* `0` or `s` — Enable **Standby** mode ($0.00\text{ A}$).
-* `b` or `B` — Toggle **Active Balancing** simulation.
-* `f` or `F` — Toggle **Charge/Discharge FET** switches.
-* `+` / `-` — Increase / decrease SOC by $\pm 5\%$.
-* `t` or `T` — Trigger immediate burst of full telemetry over BLE.
-* `?` or `h` — Display command help menu.
+* `m` or `toggle` — Cycle protocol mode (**JBD** → **Daly** → **Ant** → **JK**).
+* `j` or `jbd` — Switch to **JBD BMS** mode.
+* `y` or `daly` — Switch to **Daly Smart BMS** mode.
+* `a` or `ant` — Switch to **Ant BMS** mode.
+* `k` or `jk` — Switch to **JKBMS** mode.
+* `mac` — Open BLE Adapter MAC address manager menu.
+* `mac <1-N>` — Select stored MAC profile (e.g. `mac 2`).
+* `mac set <addr>` — Manually set active MAC (e.g. `mac set A5:C2:37:2D:5C:A9`).
+* `4s` / `8s` / `16s` — Set battery series count (or `cells <N>`, 3..32).
+* `w` or `wifi` — Show Wi-Fi status, IP, SSID & signal RSSI.
+* `wifi <SSID> <PASS>` — Connect to local Wi-Fi router.
+* `1` or `dis` — Enable **Discharge** mode ($-17.00\text{ A}$).
+* `2` or `chg` — Enable **Charge** mode ($+25.00\text{ A}$).
+* `0` or `idle` — Enable **Standby** mode ($0.00\text{ A}$).
+* `f` or `fet` — Toggle Charge/Discharge MOSFET switches.
+* `+` / `-` — Increase / decrease SOC by $\pm 1\%$.
+* `t` or `telemetry` — Trigger immediate burst of full telemetry over BLE.
+* `?` or `help` — Display command help menu.
 
 ---
 
-## 🌐 9. Verified Client Compatibility
+## 🌐 11. Verified Client Compatibility
 
 | Client / Application | Mode Required | Test Verification Status |
 | :--- | :--- | :---: |
 | **JBD BMS App** (iOS / Android) | `PROTO_JBD` | ✅ 100% Operational (Telemetry, cells, EEPROM, PIN) |
 | **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | ✅ 100% Operational (Full monitoring) |
 | **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | ✅ 100% Operational (Cell voltages, Modbus D2, FET, SN, FW version) |
-| **Universal BMS Monitor** (ESP32-S3 Probe) | `PROTO_JBD` & `PROTO_DALY` | ✅ 100% Operational (Auto-protocol detection, Tailscale web dashboard) |
-| **ESPHome Daly / JBD Components** | `PROTO_JBD` & `PROTO_DALY` | ✅ Fully Compatible |
+| **Ant BMS App / MAYA** (iOS / Android) | `PROTO_ANT` | ✅ 100% Operational (140-byte telemetry, polling, FET switches) |
+| **JKBMS App & ESPHome** (iOS / Android) | `PROTO_JK` | ✅ 100% Operational (300-byte JK02, DeviceInfo, registers) |
+| **Universal BMS Monitor** (ESP32-S3 Probe) | All 4 Modes | ✅ 100% Operational (Auto-protocol detection, Tailscale web dashboard) |
+| **ESPHome BMS Components** | All 4 Modes | ✅ Fully Compatible (`jbd_bms`, `daly_bms`, `ant_bms`, `jk_bms_ble`) |
 
 ---
 

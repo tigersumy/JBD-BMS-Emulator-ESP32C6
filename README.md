@@ -1,4 +1,4 @@
-# 🔋 ESP32-C6 Dual BMS BLE Emulator: JBD & Daly Smart BMS
+# 🔋 ESP32-C6 4-in-1 Universal BMS BLE Emulator: JBD, Daly, Ant BMS & JKBMS
 
 <p align="center">
   <a href="README.md"><b>English README</b></a> |
@@ -11,9 +11,11 @@
 
 A full-featured, standalone hardware-in-the-loop (HIL) battery management system (BMS) emulator powered by the **ESP32-C6** microcontroller (also compatible with **ESP32-S3**).
 
-The emulator implements a **Dual-Protocol Engine** and dynamically emulates the two most popular smart BMS standards in the world:
-1. **Daly Smart BMS (DL-xxxx series)**
-2. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS**
+The emulator implements a **Quad-Protocol Engine** and dynamically emulates the 4 most popular smart BMS standards in the world:
+1. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS** (`BS-26A-072-005`)
+2. **Daly Smart BMS (DL-xxxx series)** (`DL-401804015491`)
+3. **Ant BMS (ANT-BMS series)** (dynamic `ANT-BMS-08S`, `ANT-BMS-16S`)
+4. **JKBMS (JiKong JK02 protocol)** (dynamic `JK-B2A8S20P`, `JK-B2A16S20P`)
 
 This project allows safe, rapid bench testing, debugging, and calibration of inverter gateways (Growatt, Deye, Datouboss, Sandisolar, Victron), Home Assistant / ESPHome setups, and official mobile apps without connecting to a physical, hazardous high-voltage battery pack.
 
@@ -24,21 +26,27 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 ## 🚀 Key Features
 
 ### 📱 Mobile App & Client Compatibility
-- **Smart BMS (Official Daly BMS App for iOS & Android)**:
-  - **100% native compatibility in Daly BMS mode (`DL-401804015491`)**.
-  - Complete 8-cell voltage display (3.275V–3.288V) with dynamic min/max highlights.
-  - Complete hardware & software identification: Firmware `24_231116_001T`, Hardware `DL-8S-200A`, SN `207JD160400278`, Production Date `20240516`, PID `NoPID`.
-  - Full Charge & Discharge MOS switch toggling and Active Balancer control directly from the app interface.
-- **JBD BMS (Official Jiabaida App for iOS & Android)**:
+- **JBD BMS (Official Jiabaida & Xiaoxiang Apps for iOS & Android)**:
   - **100% native compatibility in JBD BMS mode (`BS-26A-072-005`)**.
   - Proprietary PIN authentication handshake `FF AA 15` (default password `123456`).
   - Full access to "Parameters" and "About Battery" views (EEPROM read/write).
-- **Xiaoxiang BMS (iOS & Android)**:
-  - Real-time telemetry, cell voltage monitoring, and temperature display in JBD mode.
+- **Smart BMS (Official Daly BMS App for iOS & Android)**:
+  - **100% native compatibility in Daly BMS mode (`DL-401804015491`)**.
+  - Complete cell voltage matrix with dynamic min/max highlights.
+  - Identification: Firmware `24_231116_001T`, Hardware `DL-8S-200A`, SN `207JD160400278`.
+  - Full Charge & Discharge MOS switch toggling and Active Balancer control.
+- **Ant BMS App (Official MAYA / AntBMS for iOS & Android)**:
+  - **100% native compatibility in Ant BMS mode (`ANT-BMS-XXS`)**.
+  - 140-byte full telemetry frames via Service `0xFFE0` / Notify `0xFFE1`.
+  - Polling negotiation (`0xDB 0xDB` / `0x5A 0x5A`) and switch controls (`0xA5 0xA5`).
+- **JKBMS (Official JiKong App for iOS & Android & ESPHome)**:
+  - **100% native compatibility in JKBMS mode (`JK-B2A<N>S20P`)**.
+  - JK02 protocol with 300-byte telemetry frames via Service `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
+  - Device Information Service `0x180A`, CellInfo (`0x96`), Settings (`0x97`), and register control (`0x1D`/`0x1E`/`0x1F`).
 - **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale Web Dashboard)**:
-  - Automatic detection of both Daly and JBD BMS protocols with real-time web telemetry over Tailscale.
+  - Automatic detection and telemetry streaming for all 4 BMS protocols over Tailscale.
 - **ESPHome / Home Assistant / Node-RED / Inverter Gateways**:
-  - Native integration with standard `daly_bms` and `jbd_bms` components.
+  - Native integration with standard `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble` components.
 
 ---
 
@@ -54,7 +62,8 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 - **Web UI Features (Dark Glassmorphic UI, UA / EN bilingual)**:
   - 📊 **Live Telemetry Monitoring**: Pack voltage, charge/discharge current, output Watts, battery SOC %, remaining Ah, temperatures, and cell voltage delta $\Delta V$ (mV).
   - 🔋 **Instant Battery Series Configuration**: 1-click preset buttons for **4S (12V)**, **8S (24V)**, and **16S (48V)**, plus dynamic selection from **3S up to 32S** persisted in NVS Flash.
-  - 🔄 **BMS Protocol Switcher**: Seamlessly toggle between **JBD BMS** (`BS-26A`) and **Daly Smart BMS** (`DL-4018`) modes.
+  - 🔄 **4-in-1 Protocol Switcher**: Seamless 1-click toggling between **JBD BMS**, **Daly BMS**, **Ant BMS**, and **JKBMS**.
+  - 📡 **BLE MAC Management**: Quick selector and custom MAC address manager with persistent profiles.
   - ⚡ **Load & Physics Simulation**: Select between **Discharge** (-17A), **Charge** (+25A), and **Standby** (0A), with live SOC slider (0–100%).
   - 🛡️ **MOSFET Switch Control**: Independent toggling of Charge MOS and Discharge MOS.
   - 📈 **Cell Voltages Matrix**: Individual cell voltage cards with color-coded battery level indicators and automated Min/Max cell identification.
@@ -62,89 +71,29 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 
 ---
 
-### 🔄 Dual-Protocol Architecture (JBD ↔ Daly)
+### 🔄 Quad-Protocol Switching Architecture
 - **Instant Mode Switching**:
-  - **Hardware Double Reset**: Double-clicking the **RST** button on the ESP32-C6 board within 1.5 seconds toggles between JBD and Daly modes. Mode is persisted across reboots in NVS Flash.
-  - **Interactive Serial CLI**: Enter `m` (toggle), `j` (JBD), or `y` (Daly) in the serial terminal (115200 baud).
-  - **Bash Script**: Run `./switch_mode.sh daly` or `./switch_mode.sh jbd`.
+  - **Hardware Button (BOOT / GPIO 9)**: Long press (> 1.5s) cycles to the next protocol with visual feedback. Hold at power-on also cycles modes.
+  - **Hardware Double Reset**: Double-clicking the **RST** button within 2.5 seconds cycles through the 4 protocols (JBD → Daly → Ant → JK → JBD).
+  - **Interactive Serial CLI**: Enter `j` (JBD), `y` (Daly), `a` (Ant), `k` (JK), or `m` (cycle) in the serial terminal (115200 baud).
+  - **Web Dashboard**: Click any of the 4 protocol buttons on the dashboard or use `/api/set-proto`.
 - **Dynamic BLE Identity**:
   - Automatically swaps BLE device name, GATT services, characteristics, and hardware MAC address on mode change.
 
 ---
 
-### 🛡️ Daly Smart BMS Emulation (DL-401804015491)
-- **Device Name**: `DL-401804015491` | **Hardware MAC**: `A5:C2:3A:26:F2:D1`.
-- **Dual Communication Standards**:
-  1. **Modbus RTU over BLE (`0xD2`)** — for official **Smart BMS** mobile app:
-     - Function 0x03 (Read Holding Registers): dynamic register slicing up to 80 registers.
-     - Registers `0x0000..0x001F`: cell voltages 1..32 in mV.
-     - Registers `0x0020..0x0027`: NTC temperatures 1..8 (+40°C offset).
-     - Registers `0x0028..0x0046`: pack voltage ($0.1\text{ V}$), current (+30000 offset), SOC, min/max V and T, average V, delta V, cycle count, power in Watts.
-     - Registers `0x0047..0x0056`: mirror single cell voltages block 1..16.
-     - Registers `0x0080..0x00A8`: configuration parameters and alarm thresholds.
-     - Registers `0x00A9..0x00CC` (35 registers = 70 bytes): device identification (SW `24_231116_001T`, HW `DL-8S-200A`, SN `207JD160400278`, password `123456`).
-     - Registers `0x00CC..0x00CD`: production date (`20240516`).
-     - Registers `0x00CE..0x00D0`: device PID string (`NoPID`).
-     - Function 0x06 (Write Single Register): Charge MOS (`0x00A5`), Discharge MOS (`0x00A6`), Active Balancer (`0x00A7`).
-  2. **UART-over-BLE (`0xA5`)** — 13-byte framed protocol for diagnostic probes and inverters:
-     - Commands `0x90`–`0x98`, `0xD9`/`0xDA`.
-     - Multi-frame 0x95 sequential cell streaming (3 sequential frames) with 40ms inter-frame pacing to prevent BLE buffer drops.
-
----
-
-### ⚡ JBD / Xiaoxiang BMS Emulation (BS-26A-072-005)
-- **Device Name**: `BS-26A-072-005` | **Hardware MAC**: `A5:C2:3A:26:F2:C2`.
-- **GATT Profile**: Primary Service `0xFF00` (Notify: `0xFF01`, Write: `0xFF02`) and mirror service `0xFFF0`.
-- **Apple iOS CoreBluetooth Compatibility**:
-  - Injects hardware MAC into `Manufacturer Data` of the Scan Response packet for instant discovery on iPhone.
-  - Open Pairing security mode with application-level PIN handshake (`123456`) without SMP bonding conflicts.
-- **Memory & Registers**:
-  - Full EEPROM map (`0x10`..`0x3F`, `0xAA` error logs).
-  - Direct AFE RAM memory reading (`0xFA`, offset `0x58` — 8 cell voltages in mV) for Android JBD App.
-  - 20-byte ATT MTU chunking with 25ms delay for 100% stability across Android (MTU 23) and iOS (MTU 512).
-
----
-
-### 🔋 Multi-Series Battery Physics & Configurations (4S / 8S / 16S ... 32S)
-- **Supported Battery Configurations**:
-  - **4S (12V / 12.8V LiFePO4)**:
-    - Operating range: $10.0\text{ V} \dots 14.6\text{ V}$ (nominal $12.8\text{ V}$).
-    - Target systems: 12V automotive, marine, RV/camper setups, portable power stations, and 12V telecom UPS.
-    - Calibration profile included: `4s standard LiFePO4 Alf-20210608.fig`.
-    - Daly firmware identity: `12_231116_001T` | JBD model: `JBD-SP04S020` / `DP04S007`.
-  - **8S (24V / 25.6V LiFePO4) — Default Profile**:
-    - Operating range: $20.0\text{ В} \dots 29.2\text{ В}$ (nominal $25.6\text{ В}$, loaded operating point at $17\text{ A}$ $\sim 26.24\text{ В}$, power draw $\sim 445\text{ W}$).
-    - Target systems: 24V home backup power, solar ESS, 24V hybrid inverters.
-    - Calibration profile included: `8s standard LiFePO4 Alf-20210608.fig`.
-    - Identity: Daly `DL-8S-200A` (`24_231116_001T`) | JBD `DB24SF01 V1.0` / `BS-26A-072-005`.
-  - **16S (48V / 51.2V LiFePO4)**:
-    - Operating range: $40.0\text{ В} \dots 58.4\text{ В}$ (nominal $51.2\text{ В}$).
-    - Target systems: Residential & industrial 48V solar hybrid inverters (Deye, Growatt, Victron, Must, Axioma, Luxpower) and server-rack lithium batteries.
-    - Calibration profile included: `16s standard LiFePO4 Alf-20210608.fig`.
-  - **Universal Dynamic Scaling (3S to 32S)**:
-    - Full protocol support for setting arbitrary series cell counts in runtime via JBD EEPROM (register `0x2F`) and Daly Modbus (registers `0x0031`/`0x0083`, commands `0x50`/`0xD6`).
-    - The physics engine dynamically computes pack voltage based on cell count: $U_{pack} = \sum_{i=1}^{N} U_{cell\_i}$.
-- **Chemistry Types Supported**:
-  - **LiFePO4 (LFP)**: $3.2\text{ V}$ nominal ($2.5\text{ V} \dots 3.65\text{ V}$). Common: 4S (12.8V), 8S (25.6V), 16S (51.2V).
-  - **Li-ion / NMC (Ternary)**: $3.6\text{–}3.7\text{ V}$ nominal ($2.8\text{ V} \dots 4.2\text{ V}$). Common: 3S (11.1V), 7S (25.9V), 10S (36V), 13S/14S (48V), 20S (72V).
-  - **LTO (Lithium Titanate)**: $2.3\text{–}2.4\text{ V}$ nominal ($1.5\text{ V} \dots 2.8\text{ В}$). Common: 5S/6S (12V), 10S/11S (24V), 20S/22S (48V).
-- **Dynamic Cell Voltage Breathing**: Cell voltages continuously oscillate in real-time with sine-wave variations and pseudorandom micro-jitter ($\Delta V \sim 3\text{–}12\text{ mV}$).
-- **Load Modes**:
-  - **Discharge**: $-17.00\text{ A}$ (for 8S pack voltage $\sim 26.24\text{ V}$, power draw $\sim 445\text{ W}$).
-  - **Charge**: $+25.00\text{ A}$ (with realistic charger ripple).
-  - **Standby**: $0.00\text{ A}$, power draw $0\text{ W}$.
-- **Coulomb Counting**: Real-time integration of current ($I \times \Delta t$) updating remaining Ah and SOC %.
-- **FET Switch Responsiveness**: Turning off the Discharge FET immediately drops current to $0.00\text{ A}$ and power to $0\text{ W}$.
-
----
-
 ### 🎨 WS2812B RGB Status LED (GPIO 8)
-- 🔴 **Red**: Advertising / Waiting for connection.
-- 🟠 **Orange**: Active Discharge (-17.00 A).
-- 🩵 **Cyan**: Active Charge (+17.00 A).
-- 🟢 **Green**: Standby (0.00 A / FETs OFF).
-- ⚪ **White**: Full Charge (100% SOC).
-- 🟡 **Yellow**: Alarm / Protection triggered.
+- **Advertising (Waiting for Client)**:
+  - 🔴 **Red**: JBD BMS mode
+  - 🟣 **Magenta**: Daly Smart BMS mode
+  - 🔵 **Blue**: Ant BMS mode
+  - 🟠 **Orange**: JKBMS mode
+- **Connected**:
+  - 🟢 **Green**: Standby (0.00 A / Idle).
+  - 🩵 **Cyan**: Active Charge (+25.00 A).
+  - 🔵 / 🟠: Active Discharge (-17.00 A).
+  - ⚪ **White**: Full Charge (100% SOC).
+  - 🟡 **Yellow**: Alarm / Protection triggered.
 
 ---
 
