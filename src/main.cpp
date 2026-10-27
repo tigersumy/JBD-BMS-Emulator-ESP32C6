@@ -246,6 +246,323 @@ void setEmulatorMode(EmulatorProtocol p) {
 }
 
 // ============================================================================
+// BLE Adapter MAC Address Storage & Management
+// ============================================================================
+#define MAX_STORED_MACS 16
+
+struct StoredMacItem {
+    uint8_t mac[6];
+    char label[24];
+};
+
+static uint8_t g_activeBtMac[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+static int8_t  g_activeMacIndex = 0; // 0..N-1, or -1 if custom
+static StoredMacItem g_storedMacs[MAX_STORED_MACS];
+static uint8_t g_storedMacCount = 0;
+
+bool parseMacAddress(const char* str, uint8_t* macOut) {
+    if (!str || strlen(str) < 12) return false;
+    unsigned int b[6];
+    int n = sscanf(str, "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]);
+    if (n != 6) {
+        n = sscanf(str, "%x-%x-%x-%x-%x-%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]);
+    }
+    if (n != 6 && strlen(str) == 12) {
+        n = sscanf(str, "%2x%2x%2x%2x%2x%2x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]);
+    }
+    if (n == 6) {
+        for (int i = 0; i < 6; i++) {
+            if (b[i] > 0xFF) return false;
+            macOut[i] = (uint8_t)b[i];
+        }
+        return true;
+    }
+    return false;
+}
+
+String formatMacAddress(const uint8_t* mac) {
+    char buf[18];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return String(buf);
+}
+
+int findStoredMacIndex(const uint8_t* mac) {
+    for (uint8_t i = 0; i < g_storedMacCount; i++) {
+        if (memcmp(g_storedMacs[i].mac, mac, 6) == 0) return i;
+    }
+    return -1;
+}
+
+void saveMacConfigToNvs() {
+    s_prefs.begin("bms_emu", false);
+    s_prefs.putUChar("mac_cnt", g_storedMacCount);
+    for (uint8_t i = 0; i < g_storedMacCount; i++) {
+        char keyM[12], keyL[12];
+        snprintf(keyM, sizeof(keyM), "mac_%u", i);
+        snprintf(keyL, sizeof(keyL), "mac_l_%u", i);
+        s_prefs.putBytes(keyM, g_storedMacs[i].mac, 6);
+        s_prefs.putString(keyL, g_storedMacs[i].label);
+    }
+    s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+    s_prefs.putChar("mac_act", g_activeMacIndex);
+    s_prefs.putBool("dr_flag", false); // Do not trigger double-reset mode change on reboot
+    s_prefs.end();
+}
+
+void initMacConfig() {
+    s_prefs.begin("bms_emu", false);
+    g_storedMacCount = s_prefs.getUChar("mac_cnt", 0);
+
+    const uint8_t userAdapterMac[6] = {0xA5, 0xC2, 0x37, 0x2D, 0x5C, 0xA9};
+
+    if (g_storedMacCount == 0) {
+        // First boot: populate default list
+        // Item 0: Default JBD (A5:C2:3A:26:F2:C2)
+        memcpy(g_storedMacs[0].mac, TARGET_BT_MAC, 6);
+        strncpy(g_storedMacs[0].label, "JBD Original", sizeof(g_storedMacs[0].label));
+
+        // Item 1: Requested Adapter (A5:C2:37:2D:5C:A9)
+        memcpy(g_storedMacs[1].mac, userAdapterMac, 6);
+        strncpy(g_storedMacs[1].label, "Adapter 5C:A9", sizeof(g_storedMacs[1].label));
+
+        // Item 2: Default Daly (A5:C2:3A:26:F2:D1)
+        memcpy(g_storedMacs[2].mac, DALY_BT_MAC, 6);
+        strncpy(g_storedMacs[2].label, "Daly Original", sizeof(g_storedMacs[2].label));
+
+        g_storedMacCount = 3;
+        s_prefs.putUChar("mac_cnt", g_storedMacCount);
+        for (uint8_t i = 0; i < g_storedMacCount; i++) {
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", i);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", i);
+            s_prefs.putBytes(keyM, g_storedMacs[i].mac, 6);
+            s_prefs.putString(keyL, g_storedMacs[i].label);
+        }
+
+        // Keep current default MAC as active initially
+        memcpy(g_activeBtMac, TARGET_BT_MAC, 6);
+        g_activeMacIndex = 0;
+        s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+        s_prefs.putChar("mac_act", g_activeMacIndex);
+    } else {
+        if (g_storedMacCount > MAX_STORED_MACS) g_storedMacCount = MAX_STORED_MACS;
+        for (uint8_t i = 0; i < g_storedMacCount; i++) {
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", i);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", i);
+            s_prefs.getBytes(keyM, g_storedMacs[i].mac, 6);
+            String lbl = s_prefs.getString(keyL, "");
+            strncpy(g_storedMacs[i].label, lbl.c_str(), sizeof(g_storedMacs[i].label) - 1);
+            g_storedMacs[i].label[sizeof(g_storedMacs[i].label) - 1] = '\0';
+        }
+
+        // Ensure user requested adapter is present in the list
+        if (findStoredMacIndex(userAdapterMac) < 0 && g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, userAdapterMac, 6);
+            strncpy(g_storedMacs[g_storedMacCount].label, "Adapter 5C:A9", sizeof(g_storedMacs[g_storedMacCount].label));
+            g_storedMacCount++;
+            s_prefs.putUChar("mac_cnt", g_storedMacCount);
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", g_storedMacCount - 1);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
+            s_prefs.putBytes(keyM, userAdapterMac, 6);
+            s_prefs.putString(keyL, "Adapter 5C:A9");
+        }
+
+        if (s_prefs.getBytes("mac_cur", g_activeBtMac, 6) != 6) {
+            memcpy(g_activeBtMac, TARGET_BT_MAC, 6);
+            s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+        }
+        g_activeMacIndex = s_prefs.getChar("mac_act", 0);
+    }
+    s_prefs.end();
+
+    // Verify active index
+    int idx = findStoredMacIndex(g_activeBtMac);
+    g_activeMacIndex = (idx >= 0) ? (int8_t)idx : -1;
+}
+
+void printMacMenu() {
+    Serial.println("\n=======================================================");
+    Serial.println("         BLE ADAPTER MAC ADDRESS MANAGEMENT           ");
+    Serial.println("=======================================================");
+    Serial.printf("Active Adapter MAC: %s", formatMacAddress(g_activeBtMac).c_str());
+    if (g_activeMacIndex >= 0 && g_activeMacIndex < g_storedMacCount) {
+        Serial.printf(" [Item #%d: %s]\n", g_activeMacIndex + 1, g_storedMacs[g_activeMacIndex].label);
+    } else {
+        Serial.println(" [Custom / Unsaved]");
+    }
+    Serial.println("-------------------------------------------------------");
+    Serial.printf("Stored MAC Profiles (%u / %u):\n", g_storedMacCount, MAX_STORED_MACS);
+    for (uint8_t i = 0; i < g_storedMacCount; i++) {
+        bool isActive = (i == g_activeMacIndex);
+        Serial.printf("  [%u] %s  %-16s %s\n", 
+                      i + 1, 
+                      formatMacAddress(g_storedMacs[i].mac).c_str(), 
+                      g_storedMacs[i].label,
+                      isActive ? "<-- [ACTIVE]" : "");
+    }
+    Serial.println("-------------------------------------------------------");
+    Serial.println("Serial Commands:");
+    Serial.println("  'mac <1-N>'         : Select stored MAC profile (e.g. 'mac 2')");
+    Serial.println("  'mac set <addr>'    : Set active MAC address (e.g. 'mac set a5:c2:37:2d:5c:a9')");
+    Serial.println("  'mac add <addr> [l]': Add new MAC to list with optional label");
+    Serial.println("  'mac del <1-N>'     : Delete MAC profile from stored list");
+    Serial.println("  'mac reset'         : Reset MAC list to default factory profiles");
+    Serial.println("  (Tip: You can also simply type a MAC address directly!)");
+    Serial.println("=======================================================\n");
+}
+
+void applyAndRestartWithMac(const uint8_t* newMac, int8_t index, const char* label = nullptr) {
+    memcpy(g_activeBtMac, newMac, 6);
+    int existingIdx = findStoredMacIndex(newMac);
+    if (existingIdx >= 0) {
+        g_activeMacIndex = (int8_t)existingIdx;
+    } else {
+        if (g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, newMac, 6);
+            const char* lbl = (label && strlen(label) > 0) ? label : "Custom MAC";
+            strncpy(g_storedMacs[g_storedMacCount].label, lbl, sizeof(g_storedMacs[g_storedMacCount].label) - 1);
+            g_storedMacs[g_storedMacCount].label[sizeof(g_storedMacs[g_storedMacCount].label) - 1] = '\0';
+            g_activeMacIndex = (int8_t)g_storedMacCount;
+            g_storedMacCount++;
+        } else {
+            g_activeMacIndex = -1;
+        }
+    }
+    saveMacConfigToNvs();
+
+    Serial.printf("\n[MAC] >>> Selected MAC: %s <<<\n", formatMacAddress(g_activeBtMac).c_str());
+    if (g_activeMacIndex >= 0 && g_activeMacIndex < g_storedMacCount) {
+        Serial.printf("[MAC] Profile: [%d] %s\n", g_activeMacIndex + 1, g_storedMacs[g_activeMacIndex].label);
+    }
+    Serial.println("[MAC] Saving to NVS and rebooting ESP32 to apply to BLE controller...");
+    for (int i = 0; i < 3; ++i) {
+        setRgbLed(60, 60, 0); // Yellow flash
+        delay(100);
+        setRgbLed(0, 0, 0);
+        delay(50);
+    }
+    esp_restart();
+}
+
+bool handleMacSerialCommand(const String& cmd) {
+    if (cmd == "mac" || cmd == "macs" || cmd == "mmenu" || cmd == "mac menu") {
+        printMacMenu();
+        return true;
+    }
+    
+    if (cmd == "mac reset") {
+        s_prefs.begin("bms_emu", false);
+        s_prefs.putUChar("mac_cnt", 0);
+        s_prefs.end();
+        Serial.println("\n[MAC] Resetting MAC profiles to factory defaults...");
+        initMacConfig();
+        saveMacConfigToNvs();
+        printMacMenu();
+        return true;
+    }
+
+    // Direct MAC address typed (e.g. "a5:c2:37:2d:5c:a9")
+    uint8_t parsedMac[6];
+    if (parseMacAddress(cmd.c_str(), parsedMac)) {
+        Serial.printf("\n[MAC] Valid MAC address recognized: %s\n", formatMacAddress(parsedMac).c_str());
+        applyAndRestartWithMac(parsedMac, -1, "Manual MAC");
+        return true;
+    }
+
+    if (cmd.startsWith("mac set ") || cmd.startsWith("setmac ")) {
+        String addrPart = cmd.startsWith("mac set ") ? cmd.substring(8) : cmd.substring(7);
+        addrPart.trim();
+        if (parseMacAddress(addrPart.c_str(), parsedMac)) {
+            applyAndRestartWithMac(parsedMac, -1, "Manual MAC");
+            return true;
+        } else {
+            Serial.printf("\n[MAC] Error: Invalid MAC format '%s'. Use format: AA:BB:CC:DD:EE:FF\n", addrPart.c_str());
+            return true;
+        }
+    }
+
+    if (cmd.startsWith("mac add ")) {
+        String args = cmd.substring(8);
+        args.trim();
+        int spaceIdx = args.indexOf(' ');
+        String addrPart = (spaceIdx > 0) ? args.substring(0, spaceIdx) : args;
+        String lblPart = (spaceIdx > 0) ? args.substring(spaceIdx + 1) : "Added MAC";
+        addrPart.trim();
+        lblPart.trim();
+
+        if (!parseMacAddress(addrPart.c_str(), parsedMac)) {
+            Serial.printf("\n[MAC] Error: Invalid MAC format '%s'.\n", addrPart.c_str());
+            return true;
+        }
+        int exIdx = findStoredMacIndex(parsedMac);
+        if (exIdx >= 0) {
+            Serial.printf("\n[MAC] Notice: MAC %s already exists in profile [%d] '%s'\n", 
+                          formatMacAddress(parsedMac).c_str(), exIdx + 1, g_storedMacs[exIdx].label);
+            return true;
+        }
+        if (g_storedMacCount >= MAX_STORED_MACS) {
+            Serial.printf("\n[MAC] Error: Stored list full (%u profiles max). Delete one first.\n", MAX_STORED_MACS);
+            return true;
+        }
+        memcpy(g_storedMacs[g_storedMacCount].mac, parsedMac, 6);
+        strncpy(g_storedMacs[g_storedMacCount].label, lblPart.c_str(), sizeof(g_storedMacs[g_storedMacCount].label) - 1);
+        g_storedMacs[g_storedMacCount].label[sizeof(g_storedMacs[g_storedMacCount].label) - 1] = '\0';
+        g_storedMacCount++;
+        saveMacConfigToNvs();
+        Serial.printf("\n[MAC] Added profile [%u]: %s (%s)\n", 
+                      g_storedMacCount, formatMacAddress(parsedMac).c_str(), lblPart.c_str());
+        printMacMenu();
+        return true;
+    }
+
+    if (cmd.startsWith("mac del ")) {
+        int num = cmd.substring(8).toInt();
+        if (num < 1 || num > g_storedMacCount) {
+            Serial.printf("\n[MAC] Error: Invalid profile index '%d'. Range: 1..%u\n", num, g_storedMacCount);
+            return true;
+        }
+        uint8_t delIdx = (uint8_t)(num - 1);
+        Serial.printf("\n[MAC] Deleted profile [%d]: %s (%s)\n", 
+                      num, formatMacAddress(g_storedMacs[delIdx].mac).c_str(), g_storedMacs[delIdx].label);
+
+        // Shift items
+        for (uint8_t i = delIdx; i < g_storedMacCount - 1; i++) {
+            g_storedMacs[i] = g_storedMacs[i + 1];
+        }
+        g_storedMacCount--;
+        
+        // Update active index
+        int curIdx = findStoredMacIndex(g_activeBtMac);
+        g_activeMacIndex = (curIdx >= 0) ? (int8_t)curIdx : -1;
+        saveMacConfigToNvs();
+        printMacMenu();
+        return true;
+    }
+
+    if (cmd.startsWith("mac ") || cmd.startsWith("mac select ")) {
+        String numStr = cmd.startsWith("mac select ") ? cmd.substring(11) : cmd.substring(4);
+        numStr.trim();
+        // Check if it's a number
+        int num = numStr.toInt();
+        if (num >= 1 && num <= g_storedMacCount) {
+            uint8_t selIdx = (uint8_t)(num - 1);
+            applyAndRestartWithMac(g_storedMacs[selIdx].mac, selIdx, g_storedMacs[selIdx].label);
+            return true;
+        }
+        // If not a number, maybe they typed "mac aa:bb:cc:dd:ee:ff"?
+        if (parseMacAddress(numStr.c_str(), parsedMac)) {
+            applyAndRestartWithMac(parsedMac, -1, "Manual MAC");
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// ============================================================================
 // Multi-color Dynamic Status LED Indicator
 // ============================================================================
 void updateStatusLed() {
@@ -1955,6 +2272,8 @@ void setup() {
 
     initDoubleResetAndMode();
 
+    initMacConfig();
+
     // Flash LED 3 times on boot to indicate selected mode
     // JBD: 3 Red flashes
     // Daly: 3 Magenta flashes
@@ -1979,10 +2298,15 @@ void setup() {
         Serial.printf("Security PIN: %s (Passkey: 123456)\n", JBD_PIN_CODE);
     }
     Serial.println("=======================================================");
-    const uint8_t* activeMac = (g_proto == PROTO_DALY) ? DALY_BT_MAC : TARGET_BT_MAC;
-    Serial.printf("Target MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+    const uint8_t* activeMac = g_activeBtMac;
+    Serial.printf("Active Adapter MAC: %02X:%02X:%02X:%02X:%02X:%02X",
                   activeMac[0], activeMac[1], activeMac[2],
                   activeMac[3], activeMac[4], activeMac[5]);
+    if (g_activeMacIndex >= 0 && g_activeMacIndex < g_storedMacCount) {
+        Serial.printf(" [Profile #%d: %s]\n", g_activeMacIndex + 1, g_storedMacs[g_activeMacIndex].label);
+    } else {
+        Serial.printf(" [Custom]\n");
+    }
     Serial.printf("Pack Voltage: %.2fV | SOC: %u%% | Cells: %uS\n", 
                   g_bms.pack_voltage_10mv / 100.0f, g_bms.soc_percent, g_bms.cell_count);
     Serial.printf("MOSFET Status: 0x%02X (Charge: %s, Discharge: %s)\n",
@@ -2157,7 +2481,7 @@ void setup() {
 
         NimBLEAdvertisementData scanData;
         scanData.setCompleteServices(NimBLEUUID(DALY_SERVICE_UUID));
-        scanData.setManufacturerData(std::string((char*)DALY_BT_MAC, 6));
+        scanData.setManufacturerData(std::string((char*)activeMac, 6));
 
         pAdvertising->setAdvertisementData(advData);
         pAdvertising->setScanResponseData(scanData);
@@ -2452,98 +2776,111 @@ void loop() {
     if (Serial.available()) {
         String cmd = Serial.readStringUntil('\n');
         cmd.trim();
-        cmd.toLowerCase();
-        if (cmd == "m" || cmd == "mode" || cmd == "toggle") {
-            toggleEmulatorMode();
-        } else if (cmd == "j" || cmd == "jbd") {
-            setEmulatorMode(PROTO_JBD);
-        } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
-            setEmulatorMode(PROTO_DALY);
-        } else if (cmd == "w" || cmd == "wifi") {
-            Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
-                          g_isApMode ? "AP (BMS-Emulator-Setup)" : "STA",
-                          g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
-                          g_isApMode ? "BMS-Emulator-Setup" : g_wifiSsid.c_str(),
-                          g_isApMode ? 0 : WiFi.RSSI(),
-                          ESP.getFreeHeap());
-        } else if (cmd.startsWith("wifi ") || cmd.startsWith("connect ")) {
-            int sp1 = cmd.indexOf(' ');
-            int sp2 = cmd.indexOf(' ', sp1 + 1);
-            if (sp1 > 0 && sp2 > 0) {
-                String s = cmd.substring(sp1 + 1, sp2);
-                String p = cmd.substring(sp2 + 1);
-                s_prefs.putString("wifi_ssid", s);
-                s_prefs.putString("wifi_pass", p);
-                Serial.printf(">>> Wi-Fi credentials saved for SSID '%s'! Restarting...\n", s.c_str());
-                delay(500);
-                esp_restart();
-            } else {
-                Serial.println(">>> Usage: wifi <SSID> <PASSWORD> <<<");
+        // Check BLE MAC management commands first (case-preserving for labels)
+        if (handleMacSerialCommand(cmd)) {
+            // Handled by MAC subsystem
+        } else {
+            cmd.toLowerCase();
+            if (cmd == "m" || cmd == "mode" || cmd == "toggle") {
+                toggleEmulatorMode();
+            } else if (cmd == "j" || cmd == "jbd") {
+                setEmulatorMode(PROTO_JBD);
+            } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
+                setEmulatorMode(PROTO_DALY);
+            } else if (cmd == "w" || cmd == "wifi") {
+                Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
+                              g_isApMode ? "AP (BMS-Emulator-Setup)" : "STA",
+                              g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
+                              g_isApMode ? "BMS-Emulator-Setup" : g_wifiSsid.c_str(),
+                              g_isApMode ? 0 : WiFi.RSSI(),
+                              ESP.getFreeHeap());
+            } else if (cmd.startsWith("wifi ") || cmd.startsWith("connect ")) {
+                int sp1 = cmd.indexOf(' ');
+                int sp2 = cmd.indexOf(' ', sp1 + 1);
+                if (sp1 > 0 && sp2 > 0) {
+                    String s = cmd.substring(sp1 + 1, sp2);
+                    String p = cmd.substring(sp2 + 1);
+                    s_prefs.putString("wifi_ssid", s);
+                    s_prefs.putString("wifi_pass", p);
+                    Serial.printf(">>> Wi-Fi credentials saved for SSID '%s'! Restarting...\n", s.c_str());
+                    delay(500);
+                    esp_restart();
+                } else {
+                    Serial.println(">>> Usage: wifi <SSID> <PASSWORD> <<<");
+                }
+            } else if (cmd.startsWith("cells ") || cmd.startsWith("cell ") || cmd.startsWith("s ")) {
+                int cnt = cmd.substring(cmd.indexOf(' ') + 1).toInt();
+                if (cnt >= 3 && cnt <= 32) {
+                    setCellCount((uint8_t)cnt);
+                } else {
+                    Serial.println(">>> Invalid cell count! Supported range: 3S..32S (e.g. '4s', '8s', '16s') <<<");
+                }
+            } else if (cmd.endsWith("s") && cmd.length() >= 2 && cmd.length() <= 3 && cmd.charAt(0) >= '0' && cmd.charAt(0) <= '9') {
+                int cnt = cmd.substring(0, cmd.length() - 1).toInt();
+                if (cnt >= 3 && cnt <= 32) {
+                    setCellCount((uint8_t)cnt);
+                } else {
+                    Serial.println(">>> Invalid cell count! Supported range: 3S..32S <<<");
+                }
+            } else if (cmd == "t" || cmd == "telemetry") {
+                Serial.printf(">>> Manual Telemetry Burst (proto=%s, connected=%d) <<<\n",
+                              (g_proto == PROTO_DALY) ? "DALY" : "JBD", g_deviceConnected);
+                if (g_proto == PROTO_DALY) {
+                    sendDalyModbusStatusD2(false);
+                    sendDalyP81Cells();
+                    sendAllDalyTelemetry();
+                }
+            } else if (cmd == "1" || cmd == "dis" || cmd == "discharge") {
+                g_bms.mode = MODE_DISCHARGE;
+                updateStatusLed();
+                Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) <<<");
+            } else if (cmd == "2" || cmd == "c" || cmd == "chg" || cmd == "charge") {
+                g_bms.mode = MODE_CHARGE;
+                updateStatusLed();
+                Serial.println(">>> Switched to MODE_CHARGE (+25.00 A) <<<");
+            } else if (cmd == "0" || cmd == "i" || cmd == "idle") {
+                g_bms.mode = MODE_IDLE;
+                updateStatusLed();
+                Serial.println(">>> Switched to MODE_IDLE (0.00 A Standby) <<<");
+            } else if (cmd == "f" || cmd == "fet") {
+                g_bms.fet_status = (g_bms.fet_status == 0x03) ? 0x00 : 0x03;
+                updateStatusLed();
+                Serial.printf(">>> Toggled MOSFETs: %s <<<\n", (g_bms.fet_status == 0x03) ? "ENABLED (ON)" : "DISABLED (OFF)");
+            } else if (cmd == "+" || cmd == "=") {
+                if (g_bms.soc_percent < 100) g_bms.soc_percent++;
+                g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
+                updateStatusLed();
+                Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
+            } else if (cmd == "-" || cmd == "_") {
+                if (g_bms.soc_percent > 0) g_bms.soc_percent--;
+                g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
+                updateStatusLed();
+                Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
+            } else if (cmd == "d") {
+                g_bms.mode = MODE_DISCHARGE;
+                updateStatusLed();
+                Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) [Tip: to switch BMS type to Daly, type 'y' or 'daly'] <<<");
+            } else if (cmd == "help" || cmd == "?") {
+                Serial.println("\n--- Interactive Serial Commands ---");
+                Serial.println("  'mac'                : Open BLE Adapter MAC address management menu");
+                Serial.println("  'mac <1-N>'          : Select stored MAC profile (e.g. 'mac 2')");
+                Serial.println("  'mac set <addr>'     : Manually set and apply active MAC (e.g. 'mac set a5:c2:37:2d:5c:a9')");
+                Serial.println("  'mac add <addr>'     : Add new MAC to profile list without rebooting");
+                Serial.println("  'mac del <1-N>'      : Delete MAC profile from stored list");
+                Serial.println("  'mac reset'          : Reset stored MAC profiles to factory defaults");
+                Serial.println("  'j' or 'jbd'         : Switch to JBD BMS emulator");
+                Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
+                Serial.println("  'm' or 'toggle'      : Toggle BMS emulator mode");
+                Serial.println("  '4s' / '8s' / '16s'  : Set battery series count (or 'cells <N>', 3..32)");
+                Serial.println("  'w' or 'wifi'        : Show Wi-Fi status, IP, SSID & signal");
+                Serial.println("  'wifi <SSID> <PASS>' : Connect to local Wi-Fi network");
+                Serial.println("  '1' / 'dis'          : Discharge mode (-17A)");
+                Serial.println("  '2' / 'chg'          : Charge mode (+25A)");
+                Serial.println("  '0' / 'idle'         : Idle mode (0A)");
+                Serial.println("  'f' / 'fet'          : Toggle Charge/Discharge MOSFETs");
+                Serial.println("  '+' / '-'            : Adjust SOC (+/- 1%)");
+                Serial.println("-----------------------------------\n");
             }
-        } else if (cmd.startsWith("cells ") || cmd.startsWith("cell ") || cmd.startsWith("s ")) {
-            int cnt = cmd.substring(cmd.indexOf(' ') + 1).toInt();
-            if (cnt >= 3 && cnt <= 32) {
-                setCellCount((uint8_t)cnt);
-            } else {
-                Serial.println(">>> Invalid cell count! Supported range: 3S..32S (e.g. '4s', '8s', '16s') <<<");
-            }
-        } else if (cmd.endsWith("s") && cmd.length() >= 2 && cmd.length() <= 3 && cmd.charAt(0) >= '0' && cmd.charAt(0) <= '9') {
-            int cnt = cmd.substring(0, cmd.length() - 1).toInt();
-            if (cnt >= 3 && cnt <= 32) {
-                setCellCount((uint8_t)cnt);
-            } else {
-                Serial.println(">>> Invalid cell count! Supported range: 3S..32S <<<");
-            }
-        } else if (cmd == "t" || cmd == "telemetry") {
-            Serial.printf(">>> Manual Telemetry Burst (proto=%s, connected=%d) <<<\n",
-                          (g_proto == PROTO_DALY) ? "DALY" : "JBD", g_deviceConnected);
-            if (g_proto == PROTO_DALY) {
-                sendDalyModbusStatusD2(false);
-                sendDalyP81Cells();
-                sendAllDalyTelemetry();
-            }
-        } else if (cmd == "1" || cmd == "dis" || cmd == "discharge") {
-            g_bms.mode = MODE_DISCHARGE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) <<<");
-        } else if (cmd == "2" || cmd == "c" || cmd == "chg" || cmd == "charge") {
-            g_bms.mode = MODE_CHARGE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_CHARGE (+25.00 A) <<<");
-        } else if (cmd == "0" || cmd == "i" || cmd == "idle") {
-            g_bms.mode = MODE_IDLE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_IDLE (0.00 A Standby) <<<");
-        } else if (cmd == "f" || cmd == "fet") {
-            g_bms.fet_status = (g_bms.fet_status == 0x03) ? 0x00 : 0x03;
-            updateStatusLed();
-            Serial.printf(">>> Toggled MOSFETs: %s <<<\n", (g_bms.fet_status == 0x03) ? "ENABLED (ON)" : "DISABLED (OFF)");
-        } else if (cmd == "+" || cmd == "=") {
-            if (g_bms.soc_percent < 100) g_bms.soc_percent++;
-            g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
-            updateStatusLed();
-            Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
-        } else if (cmd == "-" || cmd == "_") {
-            if (g_bms.soc_percent > 0) g_bms.soc_percent--;
-            g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
-            updateStatusLed();
-            Serial.printf(">>> SOC set to %u%% (%.2f Ah)\n", g_bms.soc_percent, g_bms.remain_cap_10mah / 100.0f);
-        } else if (cmd == "d") {
-            g_bms.mode = MODE_DISCHARGE;
-            updateStatusLed();
-            Serial.println(">>> Switched to MODE_DISCHARGE (-17.00 A) [Tip: to switch BMS type to Daly, type 'y' or 'daly'] <<<");
-        } else if (cmd == "help" || cmd == "?") {
-            Serial.println("\n--- Interactive Serial Commands ---");
-            Serial.println("  'j' or 'jbd'         : Switch to JBD BMS emulator");
-            Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
-            Serial.println("  'm' or 'toggle'      : Toggle BMS emulator mode");
-            Serial.println("  '4s' / '8s' / '16s'  : Set battery series count (or 'cells <N>', 3..32)");
-            Serial.println("  '1' / 'dis'          : Discharge mode (-17A)");
-            Serial.println("  '2' / 'chg'          : Charge mode (+25A)");
-            Serial.println("  '0' / 'idle'         : Idle mode (0A)");
-            Serial.println("  'f' / 'fet'          : Toggle Charge/Discharge MOSFETs");
-            Serial.println("  '+' / '-'            : Adjust SOC (+/- 1%)");
-            Serial.println("-----------------------------------\n");
         }
     }
 

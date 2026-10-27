@@ -198,17 +198,24 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 
 ## 💻 Interactive Serial Console (115200 baud)
 
+- `mac` / `macs`: Open the BLE Adapter MAC address management menu and list stored profiles.
+- `mac <1-N>`: Select stored MAC profile by index (e.g. `mac 2`).
+- `mac set <MAC>`: Set and activate a MAC address manually (e.g. `mac set a5:c2:37:2d:5c:a9`).
+- `<MAC>`: Direct entry of any MAC address (e.g. `a5:c2:37:2d:5c:a9`).
+- `mac add <MAC> [label]`: Add a new MAC address to the profile list without rebooting.
+- `mac del <1-N>`: Delete a MAC profile from the stored list.
+- `mac reset`: Reset stored MAC profiles to factory defaults.
 - `m` or `M`: Toggle protocol (**JBD** $\leftrightarrow$ **DALY**).
 - `j` or `J`: Force **JBD BMS** mode.
 - `y` or `Y`: Force **DALY BMS** mode.
 - `1` or `d`: Active discharge mode ($-17.00\text{ A}$) $\to$ 🟠 Orange LED.
-- `2` or `c`: Active charge mode ($+17.00\text{ А}$) $\to$ 🩵 Cyan LED.
-- `0` or `s`: Standby mode ($0.00\text{ А}$) $\to$ 🟢 Green LED.
+- `2` or `c`: Active charge mode ($+25.00\text{ A}$) $\to$ 🩵 Cyan LED.
+- `0` or `s`: Standby mode ($0.00\text{ A}$) $\to$ 🟢 Green LED.
 - `b` or `B`: Toggle active balancing simulation.
 - `f` or `F`: Toggle Charge/Discharge FET switches.
-- `+` / `-`: Adjust SOC by $\pm 5\%$.
+- `+` / `-`: Adjust SOC by $\pm 1\%$.
 - `t` or `T`: Send telemetry burst over BLE.
-- `?` or `h`: Print command help.
+- `?` or `help`: Print command help.
 
 ---
 
