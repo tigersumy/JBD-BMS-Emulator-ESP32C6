@@ -2532,7 +2532,7 @@ class AntWriteCallbacks : public NimBLECharacteristicCallbacks {
                 sendAntV2Status();
                 return;
             } else if (cmd == 0x02 || cmd == 0x04) {
-                if (addr == 0x026C) {
+                if (addr == 0x026C || addr == 0x0000) {
                     sendAntV2DeviceInfo();
                 } else {
                     sendAntV2SettingsAck(addr, 3650);
