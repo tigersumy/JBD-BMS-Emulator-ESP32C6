@@ -170,7 +170,9 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 
 ## 📱 Verified Client Compatibility
 
-1. **Smart BMS App** (iOS & Android) — Official Daly app with full 8 cells, NTCs, and FET switch controls in Daly mode (`DL-401804015491`).
-2. **JBD BMS / Xiaoxiang App** (iOS & Android) — Full telemetry, EEPROM, and cell monitoring in JBD mode (`BS-26A-072-005`).
-3. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe via Tailscale) — Seamless auto-detection and telemetry streaming for both JBD and Daly.
-4. **ESPHome / Home Assistant** — Compatible via standard `daly_bms` and `jbd_bms` components.
+1. **JBD BMS / Xiaoxiang App** (iOS & Android) — Full telemetry, EEPROM configuration, PIN authentication (`123456`), and individual cell monitoring in JBD mode (`BS-26A-072-005`).
+2. **Smart BMS App** (iOS & Android) — Official Daly app with full 8/16 cells, NTCs, Modbus D2 telemetry, hardware SN, firmware version, and FET switch controls in Daly mode (`DL-401804015491`).
+3. **Ant BMS App / MAYA / AntBMS v2** (iOS & Android) — 100% verified compatibility with modern `7E A1` protocol and legacy 140-byte telemetry. Full cell matrix, SOC ring gauge, temperatures (MOS, balancer, T1–T4), capacity (193.6/200Ah), and FET control in Ant mode (`ANT-BMS-08S`, `ANT-BMS-16S`).
+4. **JKBMS App (JiKong App)** (iOS & Android) — Official JiKong app tested and verified with complete 300-byte JK02 frames. Individual cell voltages (mV), wire resistance ($0.100\,\Omega$), active balancer telemetry, accurate SOC/current, and passcode unlock (`123456` or `1234`) in JK mode (`JK-B2A8S20P`, `JK-B2A16S20P`).
+5. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe via Tailscale) — Seamless automatic protocol detection and telemetry streaming across all 4 BMS standards (JBD, Daly, Ant, JK).
+6. **ESPHome / Home Assistant** — Native integration via standard components: `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble`.

@@ -170,7 +170,9 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 
 ## 📱 Перевірена сумісність з клієнтами
 
-1. **Smart BMS App** (iOS & Android) — підключення в режимі Daly (`DL-401804015491`), повні 8 комірок, версія ПЗ, серійний номер, дати та керування FET.
-2. **JBD BMS / Xiaoxiang App** (iOS & Android) — підключення в режимі JBD (`BS-26A-072-005`), повна телеметрія, EEPROM і PIN-авторизація.
-3. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe через Tailscale) — автовизначення обох типів BMS (JBD та Daly).
-4. **ESPHome / Home Assistant** — інтеграція через стандартні компоненти `daly_bms` та `jbd_bms`.
+1. **JBD BMS / Xiaoxiang App** (iOS & Android) — підключення в режимі JBD (`BS-26A-072-005`), повна телеметрія, EEPROM, налаштування параметрів та PIN-авторизація (`123456`).
+2. **Smart BMS App** (iOS & Android) — підключення в режимі Daly (`DL-401804015491`), повні 8/16 комірок, версія ПЗ, серійний номер, дати, Modbus D2 і керування ключами FET.
+3. **Ant BMS App / MAYA / AntBMS v2** (iOS & Android) — підключення в режимі Ant BMS (`ANT-BMS-08S`, `ANT-BMS-16S`). Повна підтримка сучасного протоколу `7E A1` (Modbus CRC-16) та класичного кадру 140 байтів. Відображення кругової шкали SOC, напруг усіх комірок, 4 датчиків NTC, температур MOS/балансира та статусів захисту.
+4. **JKBMS App (JiKong App)** (iOS & Android) — підключення в режимі JK BMS (`JK-B2A8S20P`, `JK-B2A16S20P`). Повна підтримка 300-байтних кадрів JK02, точні зміщення напруг комірок, внутрішній опір дротів ($0.100\,\Omega$), струм розряду/заряду, статус активного балансира та пароль доступу до налаштувань (`123456` або `1234`).
+5. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe через Tailscale) — автоматичне розпізнавання та бездротовий моніторинг усіх 4 стандартів BMS (JBD, Daly, Ant, JK).
+6. **ESPHome / Home Assistant** — інтеграція через стандартні компоненти `jbd_bms`, `daly_bms`, `ant_bms` та `jk_bms_ble`.
