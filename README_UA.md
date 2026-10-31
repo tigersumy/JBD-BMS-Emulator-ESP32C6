@@ -27,8 +27,11 @@
 ## 🚀 Основні можливості (Key Features)
 
 ### 📱 Сумісність з мобільними додатками та системами (Mobile App & Client Compatibility)
-- **JBD BMS / Xiaoxiang (Офіційні додатки Jiabaida для iOS та Android)**:
-  - **100% сумісність у режимі JBD BMS (`BS-26A-072-005`)**.
+- **JBD BMS / Xiaoxiang / PowerQueen / Overkill Solar (Додатки для iOS та Android)**:
+  - **100% нативна сумісність у режимі JBD BMS** з вибором профілю виробника:
+    - **JBD Standard / Xiaoxiang**: (`BS-26A-072-005` / `JBD-SP04S034`, MAC `A5:C2:3A:26:F2:C2`)
+    - **PowerQueen BMS**: (`P-12100B` 4S, `P-24100B` 8S, `P-48100B` 16S, MAC `A5:C2:3A:26:F2:C3`) — перевірка фірмового додатку **PowerQueen BMS App**
+    - **Overkill Solar**: (`Overkill Solar 4S` / `8S` / `16S`, MAC `A5:C2:3A:26:F2:C4`) — робота з додатком **Overkill Solar BMS App**
   - Підтримка фірмової PIN-авторизації `FF AA 15` (пароль за замовчуванням `123456`) та хендшейку.
   - Робота з вкладками «Параметри» та «Про батарею» (читання та запис регістрів EEPROM).
 - **Smart BMS (Офіційний мобільний додаток Daly BMS для iOS та Android)**:
@@ -161,7 +164,10 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `mac del <1-N>`: Видалити профіль MAC зі списку.
 - `mac reset`: Скинути список MAC до заводських налаштувань.
 - `m` або `M`: Перемкнути протокол (**JBD** $\leftrightarrow$ **DALY**).
-- `j` або `jbd`: Примусово встановити режим **JBD BMS**.
+- `j` або `jbd`: Примусово встановити режим **JBD BMS** (поточний профіль).
+- `pq` або `powerqueen`: Перемкнути на профіль **PowerQueen JBD** (`P-12100B` / `P-24100B`).
+- `os` або `overkill`: Перемкнути на профіль **Overkill Solar JBD** (`Overkill Solar BMS`).
+- `std` або `xiaoxiang`: Перемкнути на стандартний профіль **JBD / Xiaoxiang** (`BS-26A`).
 - `y` або `daly`: Примусово встановити режим **DALY BMS**.
 - `a` або `ant`: Примусово встановити режим **ANT BMS**.
 - `k` або `jk`: Примусово встановити режим **JKBMS**.
@@ -180,7 +186,7 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 
 ## 📱 Перевірена сумісність з клієнтами
 
-1. **JBD BMS / Xiaoxiang App** (iOS & Android) — підключення в режимі JBD (`BS-26A-072-005`), повна телеметрія, EEPROM, налаштування параметрів та PIN-авторизація (`123456`).
+1. **JBD BMS / Xiaoxiang / PowerQueen / Overkill Solar Apps** (iOS & Android) — підключення в режимі JBD з усіма трьома профілями (`BS-26A-072-005`, `P-12100B`, `Overkill Solar 8S`), повна телеметрія, EEPROM, налаштування параметрів, PIN-авторизація (`123456`) та перевірена робота з додатками **PowerQueen BMS App** і **Overkill Solar App**.
 2. **Smart BMS App** (iOS & Android) — підключення в режимі Daly (`DL-401804015491`), повні 8/16 комірок, версія ПЗ, серійний номер, дати, Modbus D2 і керування ключами FET.
 3. **Ant BMS App / MAYA / AntBMS v2** (iOS & Android) — підключення в режимі Ant BMS (`ANT-BMS-08S`, `ANT-BMS-16S`). Повна підтримка сучасного протоколу `7E A1` (Modbus CRC-16) та класичного кадру 140 байтів. Відображення кругової шкали SOC, напруг усіх комірок, 4 датчиків NTC, температур MOS/балансира та статусів захисту.
 4. **JKBMS App (JiKong App)** (iOS & Android) — підключення в режимі JK BMS (`JK-B2A8S20P`, `JK-B2A16S20P`). Повна підтримка 300-байтних кадрів JK02, точні зміщення напруг комірок, внутрішній опір дротів ($0.100\,\Omega$), струм розряду/заряду, статус активного балансира та пароль доступу до налаштувань (`123456` або `1234`).

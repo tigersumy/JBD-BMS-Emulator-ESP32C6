@@ -163,12 +163,35 @@ flowchart TD
 
 ---
 
-## 📱 5. Можливості режиму JBD / Xiaoxiang BMS
+## 📱 5. Можливості режиму JBD / Xiaoxiang / PowerQueen / Overkill Solar BMS
+
+Емулятор JBD підтримує 3 окремі профілі виробників із динамічним найменуванням та виділеними MAC-адресами:
+
+* **Профілі виробників BMS**:
+  * **Стандартний профіль JBD / Xiaoxiang**:
+    * Ім'я BLE: `BS-26A-072-005` (8S) / `JBD-SP04S034` (4S) / `JBD-SP16S020` (16S) / `JBD-BMS-%02uS`
+    * Виділена MAC-адреса: `A5:C2:3A:26:F2:C2`
+    * Виробник (`0xA1` & GATT `0x2A29`): `"JBD BMS"`
+    * Серійний номер / Barcode (`0xA0` & GATT `0x2A25`): `"BS-26A-072-005"`
+    * Версія заліза (`0xA2` & GATT `0x2A27`): `"BS-26A-072-005 (%uS200A)"`
+    * Клієнти: офіційні додатки Xiaoxiang App, JBD BMS App.
+  * **Профіль PowerQueen BMS** (для тестування **PowerQueen BMS App**):
+    * Ім'я BLE: `P-12100B` (4S 12V 100Ah), `P-24100B` (8S 24V 100Ah), `P-48100B` (16S 48V 100Ah)
+    * Виділена MAC-адреса: `A5:C2:3A:26:F2:C3` (усуває колізії GATT-кешу при перемиканні на iPhone / Android)
+    * Виробник (`0xA1` & GATT `0x2A29`): `"PowerQueen"`
+    * Серійний номер / Barcode (`0xA0` & GATT `0x2A25`): `P-12100B-001` (4S) / `P-24100B-001` (8S)
+    * Версія заліза (`0xA2` & GATT `0x2A27`): `"P-12100B (4S100A)"` / `"PowerQueen Smart BMS"`
+    * Клієнти: офіційний додаток **PowerQueen BMS App** (iOS / Android).
+  * **Профіль Overkill Solar BMS** (для тестування додатку **Overkill Solar**):
+    * Ім'я BLE: `Overkill Solar 4S` (4S) / `Overkill Solar 8S` (8S) / `Overkill Solar 16S` (16S)
+    * Виділена MAC-адреса: `A5:C2:3A:26:F2:C4`
+    * Виробник (`0xA1` & GATT `0x2A29`): `"Overkill Solar"`
+    * Серійний номер / Barcode (`0xA0` & GATT `0x2A25`): `OS-BMS-%02uS-100A`
+    * Версія заліза (`0xA2` & GATT `0x2A27`): `"Overkill Solar %uS BMS"`
+    * Клієнти: офіційний додаток **Overkill Solar BMS App** (iOS / Android / ПК).
 
 | Параметр | Значення / Реалізація |
 | :--- | :--- |
-| **Ім'я BLE** | `BS-26A-072-005` |
-| **MAC-адреса BLE** | `A5:C2:3A:26:F2:C2` |
 | **Основний сервіс** | Service `0xFF00` (Write: `0xFF02`, Notify: `0xFF01`) |
 | **Дзеркальний сервіс** | Service `0xFFF0` (Write: `0xFFF2`, Notify: `0xFFF1`) |
 | **MTU Chunking** | Автоматична нарізка пакетів по $\le 20$ байт із затримкою $25\text{ мс}$ (ідеальна сумісність з Android MTU=23 та iOS MTU=512) |
@@ -385,12 +408,14 @@ flowchart TD
 
 ### А. Матриця емульованих моделей
 
-| Режим BMS | Конфігурація 4S (12В блок) | Конфігурація 8S (24В блок) | Конфігурація 16S (48В блок) | Довільна збірка (3S..32S) |
+| Mode | Конфігурація 4S (12В блок) | Конфігурація 8S (24В блок) | Конфігурація 16S (48В блок) | Довільна збірка (3S..32S) |
 | :--- | :--- | :--- | :--- | :--- |
 | **Redodo / LiTime** | `Redodo-12V100A` ($13.1\text{В}$, 4 комірки) | `Redodo-24V100A` ($26.2\text{В}$, 8 комірок) | `Redodo-48V100A` ($52.5\text{В}$, 16 комірок) | `Redodo-BMS-%02uS` |
 | **Ant BMS** | `ANT-BMS-04S` ($13.1\text{В}$, 4 комірки) | `ANT-BMS-08S` ($26.2\text{В}$, 8 комірок) | `ANT-BMS-16S` ($52.5\text{В}$, 16 комірок) | `ANT-BMS-%02uS` |
 | **JKBMS** | `JK-B2A4S20P` ($13.1\text{В}$, 2A бал) | `JK-B2A8S20P` ($26.2\text{В}$, 2A бал, 200A) | `JK-B2A16S20P` ($52.5\text{В}$, 2A бал, 200A) | `JK-B2A%uS20P` |
-| **JBD BMS** | `BS-26A-072-005` (4S LiFePO4) | `BS-26A-072-005` (8S LiFePO4) | `BS-26A-072-005` (16S LiFePO4) | Динамічна кількість |
+| **JBD BMS (Standard)** | `JBD-SP04S034` ($13.1\text{В}$) | `BS-26A-072-005` ($26.2\text{В}$) | `JBD-SP16S020` ($52.5\text{В}$) | `JBD-BMS-%02uS` |
+| **JBD BMS (PowerQueen)**| `P-12100B` ($12.8\text{В}$, 100Ah) | `P-24100B` ($25.6\text{В}$, 100Ah) | `P-48100B` ($51.2\text{В}$, 100Ah) | `P-%02u100B` |
+| **JBD BMS (Overkill Solar)**| `Overkill Solar 4S` ($12.8\text{В}$) | `Overkill Solar 8S` ($25.6\text{В}$) | `Overkill Solar 16S` ($51.2\text{В}$) | `Overkill Solar %uS` |
 | **Daly BMS** | `DL-401804015491` (4S Modbus) | `DL-401804015491` (8S Modbus) | `DL-401804015491` (16S Modbus) | Динамічна кількість |
 
 ### Б. Як перемикатися між протоколами та моделями
@@ -463,8 +488,12 @@ ESP32-C6 SuperMini оснащено адресним світлодіодом WS
 Під час підключення до плати через будь-який монітор порту доступне інтерактивне керування:
 
 * `m` або `toggle` — Циклічно перемкнути протокол (**JBD** → **Daly** → **Ant** → **JK** → **Redodo**).
+* `j` або `jbd` — Примусово встановити режим **JBD BMS** (поточний профіль).
+* `pq` або `powerqueen` — Перемкнути на профіль **PowerQueen JBD** (`P-12100B` / `P-24100B`).
+* `os` або `overkill` — Перемкнути на профіль **Overkill Solar JBD** (`Overkill Solar BMS`).
+* `std` або `xiaoxiang` — Перемкнути на стандартний профіль **JBD / Xiaoxiang** (`BS-26A`).
+* `jbd profile <std|pq|os>` — Встановити профіль виробника JBD та перезавантажити.
 * `r` або `redodo` — Примусово встановити режим **Redodo / LiTime BMS**.
-* `j` або `jbd` — Примусово встановити режим **JBD BMS**.
 * `y` або `daly` — Примусово встановити режим **Daly Smart BMS**.
 * `a` або `ant` — Примусово встановити режим **Ant BMS**.
 * `k` або `jk` — Примусово встановити режим **JKBMS**.
@@ -519,6 +548,7 @@ ESP32-C6 SuperMini оснащено адресним світлодіодом WS
 | `GET` | `/api/data` | Повний JSON-зріз поточної телеметрії, конфігурації комірок та ключів FET |
 | `POST` | `/api/set-cells` | Зміна кількості комірок: `cells=4`, `cells=8`, `cells=16` (або `3..32`) |
 | `POST` | `/api/set-proto` | Зміна протоколу BMS: `proto=jbd`, `proto=daly`, `proto=ant`, `proto=jk`, `proto=redodo` |
+| `POST` | `/api/set-jbd-profile` | Зміна профілю виробника JBD: `profile=standard`, `profile=powerqueen`, `profile=overkill` |
 | `POST` | `/api/set-mode` | Зміна робочого режиму батареї: `mode=discharge`, `mode=charge`, `mode=idle` |
 | `POST` | `/api/set-soc` | Зміна рівня SOC у відсотках: `soc=0..100` |
 | `POST` | `/api/set-fet` | Керування транзисторами: `fet=charge\|discharge`, `state=0\|1` |
@@ -536,6 +566,8 @@ ESP32-C6 SuperMini оснащено адресним світлодіодом WS
 | :--- | :--- | :--- | :--- | :---: |
 | **JBD BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Телеметрія в реальному часі, напруги комірок, запис/читання EEPROM, PIN-авторизація (`123456`) | ✅ 100% Перевірено |
 | **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Напруга пакета, струм, SOC, ємність, графіки комірок, аварійні сповіщення, керування FET | ✅ 100% Перевірено |
+| **PowerQueen BMS App** (iOS / Android) | `PROTO_JBD` (PQ) | `P-12100B` / `P-24100B` | Нативне розпізнавання додатком PowerQueen, 4S/8S напруги, струм, графіки комірок, статуси захисту | ✅ 100% Перевірено |
+| **Overkill Solar BMS App** (iOS / Android / PC) | `PROTO_JBD` (OS) | `Overkill Solar 8S` | Сумісність із відкритим клієнтом Overkill Solar, калібрування комірок, редагування EEPROM | ✅ 100% Перевірено |
 | **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | `DL-401804015491` | Телеметрія Modbus D2, 8/16 комірок, температури, серійний номер, версія прошивки, ключі FET | ✅ 100% Перевірено |
 | **Ant BMS App / MAYA / AntBMS v2** (iOS / Android) | `PROTO_ANT` | `ANT-BMS-08S` / `16S` | Сучасний протокол `7E A1`, матриця 8/16 комірок, кругова шкала SOC, температури (MOS, балансир, T1..T4), ємність, ключі FET | ✅ 100% Перевірено |
 | **JKBMS App (JiKong App)** (iOS / Android) | `PROTO_JK` | `JK-B2A8S20P` / `16S` | Повні 300-байтні кадри JK02, напруги 8/16 комірок, опір дротів ($0.100\,\Omega$), активне балансування, розблокування паролем налаштувань (`123456` / `1234`) | ✅ 100% Перевірено |

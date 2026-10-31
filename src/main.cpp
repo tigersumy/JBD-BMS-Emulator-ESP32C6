@@ -49,11 +49,19 @@ enum EmulatorProtocol {
 #define JBD_PIN_CODE "123456"
 
 // Target Bluetooth MAC Addresses (Separate MACs prevent GATT caching collisions)
-const uint8_t TARGET_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
-const uint8_t DALY_BT_MAC[6]   = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xD1};
-const uint8_t ANT_BT_MAC[6]    = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xE1};
-const uint8_t JK_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xF1};
-const uint8_t REDODO_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xB1};
+const uint8_t TARGET_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2}; // JBD BMS Standard / Xiaoxiang
+const uint8_t POWERQUEEN_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC3}; // JBD BMS PowerQueen
+const uint8_t OVERKILL_BT_MAC[6]   = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC4}; // JBD BMS Overkill Solar
+const uint8_t DALY_BT_MAC[6]       = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xD1};
+const uint8_t ANT_BT_MAC[6]        = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xE1};
+const uint8_t JK_BT_MAC[6]         = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xF1};
+const uint8_t REDODO_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xB1};
+
+enum JbdProfile {
+    JBD_PROFILE_STANDARD = 0,    // Standard JBD / Xiaoxiang (BS-26A-072-005 / SP04S)
+    JBD_PROFILE_POWERQUEEN = 1,  // PowerQueen (P-12100B / P-24100B)
+    JBD_PROFILE_OVERKILL = 2     // Overkill Solar (Overkill Solar BMS)
+};
 
 // ============================================================================
 // RGB LED Control with 50% Brightness Scaling
@@ -149,6 +157,101 @@ static EmulatorProtocol g_proto = PROTO_JBD;
 static unsigned long g_bootTime = 0;
 static bool g_doubleResetPending = false;
 
+static JbdProfile g_jbdProfile = JBD_PROFILE_STANDARD;
+
+const char* getJbdProfileName(JbdProfile prof) {
+    switch (prof) {
+        case JBD_PROFILE_POWERQUEEN: return "PowerQueen";
+        case JBD_PROFILE_OVERKILL:   return "Overkill Solar";
+        case JBD_PROFILE_STANDARD:
+        default:                     return "JBD / Xiaoxiang";
+    }
+}
+
+String getJbdDeviceName() {
+    char buf[32];
+    if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) {
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "P-12100B");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "P-24100B");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "P-48100B");
+        } else {
+            snprintf(buf, sizeof(buf), "P-%02u100B", (unsigned int)g_bms.cell_count);
+        }
+        return String(buf);
+    } else if (g_jbdProfile == JBD_PROFILE_OVERKILL) {
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "Overkill Solar 4S");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "Overkill Solar 8S");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "Overkill Solar 16S");
+        } else {
+            snprintf(buf, sizeof(buf), "Overkill Solar %uS", (unsigned int)g_bms.cell_count);
+        }
+        return String(buf);
+    } else {
+        // Standard JBD / Xiaoxiang
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "JBD-SP04S034");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "BS-26A-072-005");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "JBD-SP16S020");
+        } else {
+            snprintf(buf, sizeof(buf), "JBD-BMS-%02uS", (unsigned int)g_bms.cell_count);
+        }
+        return String(buf);
+    }
+}
+
+const char* getJbdManufacturerName() {
+    if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) return "PowerQueen";
+    if (g_jbdProfile == JBD_PROFILE_OVERKILL)   return "Overkill Solar";
+    return "JBD BMS";
+}
+
+const char* getJbdBarcode() {
+    if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) {
+        if (g_bms.cell_count == 4) return "P-12100B-001";
+        if (g_bms.cell_count == 8) return "P-24100B-001";
+        if (g_bms.cell_count == 16) return "P-48100B-001";
+        return "PQ-BMS-001";
+    }
+    if (g_jbdProfile == JBD_PROFILE_OVERKILL) {
+        if (g_bms.cell_count == 4) return "OS-BMS-04S-120A";
+        if (g_bms.cell_count == 8) return "OS-BMS-08S-100A";
+        if (g_bms.cell_count == 16) return "OS-BMS-16S-100A";
+        return "OS-BMS-DEFAULT";
+    }
+    return "BS-26A-072-005";
+}
+
+String getJbdHardwareVersion() {
+    char buf[40];
+    if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) {
+        if (g_bms.cell_count == 4) snprintf(buf, sizeof(buf), "P-12100B (4S100A)");
+        else if (g_bms.cell_count == 8) snprintf(buf, sizeof(buf), "P-24100B (8S100A)");
+        else if (g_bms.cell_count == 16) snprintf(buf, sizeof(buf), "P-48100B (16S100A)");
+        else snprintf(buf, sizeof(buf), "PowerQueen Smart BMS");
+        return String(buf);
+    }
+    if (g_jbdProfile == JBD_PROFILE_OVERKILL) {
+        snprintf(buf, sizeof(buf), "Overkill Solar %uS BMS", (unsigned int)g_bms.cell_count);
+        return String(buf);
+    }
+    snprintf(buf, sizeof(buf), "BS-26A-072-005 (%uS200A)", (unsigned int)g_bms.cell_count);
+    return String(buf);
+}
+
+void updateJbdNames() {
+    String devName = getJbdDeviceName();
+    strncpy(g_bms.device_name, devName.c_str(), sizeof(g_bms.device_name) - 1);
+    g_bms.device_name[sizeof(g_bms.device_name) - 1] = '\0';
+}
+
 String getAntDeviceName() {
     char buf[32];
     snprintf(buf, sizeof(buf), "ANT-BMS-%02uS", (unsigned int)g_bms.cell_count);
@@ -180,7 +283,7 @@ String getActiveDeviceName() {
     if (g_proto == PROTO_ANT)    return getAntDeviceName();
     if (g_proto == PROTO_JK)     return getJkDeviceName();
     if (g_proto == PROTO_REDODO) return getRedodoDeviceName();
-    return String(BLE_DEVICE_NAME);
+    return getJbdDeviceName();
 }
 
 const char* getProtoName(EmulatorProtocol p) {
@@ -279,6 +382,14 @@ void initDoubleResetAndMode() {
     if (savedCells >= 3 && savedCells <= 32) {
         g_bms.cell_count = savedCells;
     }
+    uint8_t savedJbdSub = s_prefs.getUChar("jbd_sub", JBD_PROFILE_STANDARD);
+    if (savedJbdSub > JBD_PROFILE_OVERKILL) savedJbdSub = JBD_PROFILE_STANDARD;
+    g_jbdProfile = (JbdProfile)savedJbdSub;
+    if (g_jbdProfile == JBD_PROFILE_POWERQUEEN && g_bms.cell_count == 4) {
+        g_bms.nominal_cap_10mah = 10000;
+        g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
+    }
+    updateJbdNames();
     g_bootTime = millis();
 }
 
@@ -286,6 +397,11 @@ void setCellCount(uint8_t cnt) {
     if (cnt < 3 || cnt > 32) return;
     g_bms.cell_count = cnt;
     s_prefs.putUChar("cell_cnt", cnt);
+    if (g_jbdProfile == JBD_PROFILE_POWERQUEEN && cnt == 4) {
+        g_bms.nominal_cap_10mah = 10000;
+        g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
+    }
+    updateJbdNames();
     uint32_t totalMv = 0;
     for (int i = 0; i < cnt && i < 32; ++i) {
         totalMv += g_bms.cell_mv[i];
@@ -363,6 +479,11 @@ void setEmulatorMode(EmulatorProtocol p) {
     else if (p == PROTO_ANT) nextMac = ANT_BT_MAC;
     else if (p == PROTO_JK) nextMac = JK_BT_MAC;
     else if (p == PROTO_REDODO) nextMac = REDODO_BT_MAC;
+    else if (p == PROTO_JBD) {
+        if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) nextMac = POWERQUEEN_BT_MAC;
+        else if (g_jbdProfile == JBD_PROFILE_OVERKILL) nextMac = OVERKILL_BT_MAC;
+        else nextMac = TARGET_BT_MAC;
+    }
     memcpy(g_activeBtMac, nextMac, 6);
     s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
     int idx = findStoredMacIndex(g_activeBtMac);
@@ -382,6 +503,31 @@ void setEmulatorMode(EmulatorProtocol p) {
         delay(50);
     }
     esp_restart();
+}
+
+void setJbdProfile(JbdProfile prof) {
+    if (prof > JBD_PROFILE_OVERKILL) return;
+    g_jbdProfile = prof;
+    s_prefs.begin("bms_emu", false);
+    s_prefs.putUChar("jbd_sub", (uint8_t)prof);
+    s_prefs.putBool("dr_flag", false);
+
+    if (g_proto == PROTO_JBD) {
+        const uint8_t* nextMac = TARGET_BT_MAC;
+        if (prof == JBD_PROFILE_POWERQUEEN) nextMac = POWERQUEEN_BT_MAC;
+        else if (prof == JBD_PROFILE_OVERKILL) nextMac = OVERKILL_BT_MAC;
+        memcpy(g_activeBtMac, nextMac, 6);
+        s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+        int idx = findStoredMacIndex(g_activeBtMac);
+        s_prefs.putChar("mac_act", (int8_t)idx);
+    }
+    s_prefs.end();
+    if (prof == JBD_PROFILE_POWERQUEEN && g_bms.cell_count == 4) {
+        g_bms.nominal_cap_10mah = 10000;
+        g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
+    }
+    updateJbdNames();
+    Serial.printf("\n[SYSTEM] JBD Profile set to %s (%s)\n", getJbdProfileName(prof), getJbdDeviceName().c_str());
 }
 
 void saveMacConfigToNvs() {
@@ -412,27 +558,35 @@ void initMacConfig() {
         memcpy(g_storedMacs[0].mac, TARGET_BT_MAC, 6);
         strncpy(g_storedMacs[0].label, "JBD Original", sizeof(g_storedMacs[0].label));
 
-        // Item 1: Requested Adapter (A5:C2:37:2D:5C:A9)
-        memcpy(g_storedMacs[1].mac, userAdapterMac, 6);
-        strncpy(g_storedMacs[1].label, "Adapter 5C:A9", sizeof(g_storedMacs[1].label));
+        // Item 1: PowerQueen (A5:C2:3A:26:F2:C3)
+        memcpy(g_storedMacs[1].mac, POWERQUEEN_BT_MAC, 6);
+        strncpy(g_storedMacs[1].label, "PowerQueen JBD", sizeof(g_storedMacs[1].label));
 
-        // Item 2: Default Daly (A5:C2:3A:26:F2:D1)
-        memcpy(g_storedMacs[2].mac, DALY_BT_MAC, 6);
-        strncpy(g_storedMacs[2].label, "Daly Original", sizeof(g_storedMacs[2].label));
+        // Item 2: Overkill Solar (A5:C2:3A:26:F2:C4)
+        memcpy(g_storedMacs[2].mac, OVERKILL_BT_MAC, 6);
+        strncpy(g_storedMacs[2].label, "Overkill Solar", sizeof(g_storedMacs[2].label));
 
-        // Item 3: Default Ant (A5:C2:3A:26:F2:E1)
-        memcpy(g_storedMacs[3].mac, ANT_BT_MAC, 6);
-        strncpy(g_storedMacs[3].label, "Ant Original", sizeof(g_storedMacs[3].label));
+        // Item 3: Requested Adapter (A5:C2:37:2D:5C:A9)
+        memcpy(g_storedMacs[3].mac, userAdapterMac, 6);
+        strncpy(g_storedMacs[3].label, "Adapter 5C:A9", sizeof(g_storedMacs[3].label));
 
-        // Item 4: Default JK (A5:C2:3A:26:F2:F1)
-        memcpy(g_storedMacs[4].mac, JK_BT_MAC, 6);
-        strncpy(g_storedMacs[4].label, "JK Original", sizeof(g_storedMacs[4].label));
+        // Item 4: Default Daly (A5:C2:3A:26:F2:D1)
+        memcpy(g_storedMacs[4].mac, DALY_BT_MAC, 6);
+        strncpy(g_storedMacs[4].label, "Daly Original", sizeof(g_storedMacs[4].label));
 
-        // Item 5: Default Redodo (A5:C2:3A:26:F2:B1)
-        memcpy(g_storedMacs[5].mac, REDODO_BT_MAC, 6);
-        strncpy(g_storedMacs[5].label, "Redodo Original", sizeof(g_storedMacs[5].label));
+        // Item 5: Default Ant (A5:C2:3A:26:F2:E1)
+        memcpy(g_storedMacs[5].mac, ANT_BT_MAC, 6);
+        strncpy(g_storedMacs[5].label, "Ant Original", sizeof(g_storedMacs[5].label));
 
-        g_storedMacCount = 6;
+        // Item 6: Default JK (A5:C2:3A:26:F2:F1)
+        memcpy(g_storedMacs[6].mac, JK_BT_MAC, 6);
+        strncpy(g_storedMacs[6].label, "JK Original", sizeof(g_storedMacs[6].label));
+
+        // Item 7: Default Redodo (A5:C2:3A:26:F2:B1)
+        memcpy(g_storedMacs[7].mac, REDODO_BT_MAC, 6);
+        strncpy(g_storedMacs[7].label, "Redodo Original", sizeof(g_storedMacs[7].label));
+
+        g_storedMacCount = 8;
         s_prefs.putUChar("mac_cnt", g_storedMacCount);
         for (uint8_t i = 0; i < g_storedMacCount; i++) {
             char keyM[12], keyL[12];
@@ -448,6 +602,10 @@ void initMacConfig() {
         else if (g_proto == PROTO_ANT) defMac = ANT_BT_MAC;
         else if (g_proto == PROTO_JK) defMac = JK_BT_MAC;
         else if (g_proto == PROTO_REDODO) defMac = REDODO_BT_MAC;
+        else if (g_proto == PROTO_JBD) {
+            if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) defMac = POWERQUEEN_BT_MAC;
+            else if (g_jbdProfile == JBD_PROFILE_OVERKILL) defMac = OVERKILL_BT_MAC;
+        }
         memcpy(g_activeBtMac, defMac, 6);
         g_activeMacIndex = findStoredMacIndex(g_activeBtMac);
         s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
@@ -514,6 +672,32 @@ void initMacConfig() {
             snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
             s_prefs.putBytes(keyM, REDODO_BT_MAC, 6);
             s_prefs.putString(keyL, "Redodo Original");
+        }
+
+        // Ensure PowerQueen profile is present in the list
+        if (findStoredMacIndex(POWERQUEEN_BT_MAC) < 0 && g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, POWERQUEEN_BT_MAC, 6);
+            strncpy(g_storedMacs[g_storedMacCount].label, "PowerQueen JBD", sizeof(g_storedMacs[g_storedMacCount].label));
+            g_storedMacCount++;
+            s_prefs.putUChar("mac_cnt", g_storedMacCount);
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", g_storedMacCount - 1);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
+            s_prefs.putBytes(keyM, POWERQUEEN_BT_MAC, 6);
+            s_prefs.putString(keyL, "PowerQueen JBD");
+        }
+
+        // Ensure Overkill Solar profile is present in the list
+        if (findStoredMacIndex(OVERKILL_BT_MAC) < 0 && g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, OVERKILL_BT_MAC, 6);
+            strncpy(g_storedMacs[g_storedMacCount].label, "Overkill Solar", sizeof(g_storedMacs[g_storedMacCount].label));
+            g_storedMacCount++;
+            s_prefs.putUChar("mac_cnt", g_storedMacCount);
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", g_storedMacCount - 1);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
+            s_prefs.putBytes(keyM, OVERKILL_BT_MAC, 6);
+            s_prefs.putString(keyL, "Overkill Solar");
         }
 
         if (s_prefs.getBytes("mac_cur", g_activeBtMac, 6) != 6) {
@@ -944,26 +1128,26 @@ void sendCellVoltages() {
 
 // Build and send Device Name / Hardware Version (Register 0x05)
 void sendDeviceName() {
-    size_t len = strlen(g_bms.device_name);
-    sendJBDResponse(0x05, (const uint8_t*)g_bms.device_name, len);
+    String devName = getJbdDeviceName();
+    sendJBDResponse(0x05, (const uint8_t*)devName.c_str(), devName.length());
 }
 
 // Build and send Barcode / Serial Info (Register 0xA0)
 void sendBarcode() {
-    const char* barcode = "BS-26A-072-005";
+    const char* barcode = getJbdBarcode();
     sendJBDResponse(0xA0, (const uint8_t*)barcode, strlen(barcode));
 }
 
 // Build and send Manufacturer Name (Register 0xA1)
 void sendManufacturerName() {
-    const char* mfg = "JBD BMS";
+    const char* mfg = getJbdManufacturerName();
     sendJBDResponse(0xA1, (const uint8_t*)mfg, strlen(mfg));
 }
 
 // Build and send Hardware Info (Register 0xA2)
 void sendHardwareVersion() {
-    const char* hw = "BS-26A-072-005 (8S200A)";
-    sendJBDResponse(0xA2, (const uint8_t*)hw, strlen(hw));
+    String hw = getJbdHardwareVersion();
+    sendJBDResponse(0xA2, (const uint8_t*)hw.c_str(), hw.length());
 }
 
 // Build and send Parameter / EEPROM registers (0x10 - 0x3F)
@@ -3220,6 +3404,9 @@ void setupWebServerRoutes() {
         else if (g_proto == PROTO_REDODO) protoStr = "REDODO";
         doc["proto"] = protoStr;
         doc["device_name"] = getActiveDeviceName();
+        doc["jbd_profile"] = (g_jbdProfile == JBD_PROFILE_POWERQUEEN) ? "powerqueen" :
+                             ((g_jbdProfile == JBD_PROFILE_OVERKILL) ? "overkill" : "standard");
+        doc["jbd_profile_name"] = getJbdProfileName(g_jbdProfile);
         doc["cell_count"] = g_bms.cell_count;
         doc["pack_voltage"] = g_bms.pack_voltage_10mv / 100.0f;
         doc["current"] = g_bms.current_10ma / 100.0f;
@@ -3306,6 +3493,27 @@ void setupWebServerRoutes() {
             delay(200);
             setEmulatorMode(PROTO_JBD);
         }
+    });
+
+    // API: Switch JBD Manufacturer Profile (Standard <-> PowerQueen <-> Overkill)
+    g_httpServer.on("/api/set-jbd-profile", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        String prof = doc["profile"] | "";
+        prof.toLowerCase();
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        JbdProfile newProf = JBD_PROFILE_STANDARD;
+        if (prof == "powerqueen" || prof == "pq") {
+            newProf = JBD_PROFILE_POWERQUEEN;
+        } else if (prof == "overkill" || prof == "os") {
+            newProf = JBD_PROFILE_OVERKILL;
+        } else {
+            newProf = JBD_PROFILE_STANDARD;
+        }
+        setJbdProfile(newProf);
+        delay(200);
+        setEmulatorMode(PROTO_JBD);
     });
 
     // API: Set Simulation Mode (discharge, charge, idle)
@@ -3649,8 +3857,9 @@ void setup() {
         Serial.println("   ESP32-C6 Redodo / LiTime Monolithic BLE Emulator    ");
         Serial.printf("Device Name: %s\n", getRedodoDeviceName().c_str());
     } else {
-        Serial.println("   ESP32-C6 JBD BMS BLE Emulator (DB24SF01 / 8S200A)   ");
-        Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
+        Serial.printf("   ESP32-C6 JBD BMS BLE Emulator (%s)   \n", getJbdProfileName(g_jbdProfile));
+        Serial.printf("Device Name: %s\n", getActiveDeviceName().c_str());
+        Serial.printf("Manufacturer: %s | Barcode: %s\n", getJbdManufacturerName(), getJbdBarcode());
         Serial.printf("Security PIN: %s (Passkey: 123456)\n", JBD_PIN_CODE);
     }
     Serial.println("=======================================================");
@@ -4036,7 +4245,8 @@ void setup() {
         Serial.println("[BLE] Ready for connection from Redodo Monitor (HTML/Web Bluetooth), LiTime App, or ESP32 Universal Monitor...");
     } else {
         // Initialize NimBLE Device for JBD
-        NimBLEDevice::init(BLE_DEVICE_NAME);
+        String jbdName = getActiveDeviceName();
+        NimBLEDevice::init(jbdName.c_str());
         NimBLEDevice::setMTU(512);
         NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum TX power (+9dBm)
         NimBLEDevice::setSecurityAuth(false, false, false);
@@ -4076,17 +4286,17 @@ void setup() {
         NimBLECharacteristic* pModelChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ
         );
-        pModelChar->setValue("BS-26A-072-005");
+        pModelChar->setValue(jbdName.c_str());
 
         NimBLECharacteristic* pMfgChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ
         );
-        pMfgChar->setValue("JBD BMS");
+        pMfgChar->setValue(getJbdManufacturerName());
 
         NimBLECharacteristic* pSerialChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ
         );
-        pSerialChar->setValue("BS-26A-072-005");
+        pSerialChar->setValue(getJbdBarcode());
 
         NimBLECharacteristic* pFwChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ
@@ -4096,7 +4306,7 @@ void setup() {
         NimBLECharacteristic* pHwChar = pDevInfo->createCharacteristic(
             NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ
         );
-        pHwChar->setValue("V1.0");
+        pHwChar->setValue(getJbdHardwareVersion().c_str());
 
         // Start Services
         pServer->start();
@@ -4107,13 +4317,14 @@ void setup() {
         // Primary Advertisement Packet (25 bytes <= 31 bytes): Flags + Complete Name + 16-bit Service UUID
         NimBLEAdvertisementData advData;
         advData.setFlags(0x06); // General Discoverable + BR_EDR_NOT_SUPPORTED
-        advData.setName(BLE_DEVICE_NAME);
+        advData.setName(jbdName.c_str());
         advData.setCompleteServices(NimBLEUUID((uint16_t)0xFF00));
 
         // Scan Response Packet (24 bytes <= 31 bytes): 128-bit UUID + pure 6-byte MAC in Manufacturer Data
         NimBLEAdvertisementData scanData;
         scanData.setCompleteServices(NimBLEUUID("0000FF00-0000-1000-8000-00805F9B34FB"));
-        uint8_t mfgBytes[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
+        uint8_t mfgBytes[6];
+        memcpy(mfgBytes, g_activeBtMac, 6);
         scanData.setManufacturerData(std::string((char*)mfgBytes, 6));
 
         pAdvertising->setAdvertisementData(advData);
@@ -4125,8 +4336,10 @@ void setup() {
         // Initial state: Red LED indicates Advertising / Waiting for client
         updateStatusLed();
 
-        Serial.println("[BLE] Advertising started successfully as 'BS-26A-072-005' with PIN 123456.");
-        Serial.println("[BLE] Ready for connection from XiaoxiangBMS, JBD BMS, or ESP32 Universal Monitor...");
+        Serial.printf("[BLE] Advertising started successfully as '%s' with PIN 123456.\n", jbdName.c_str());
+        Serial.printf("[BLE] Profile: %s | Manufacturer: %s | Barcode: %s\n",
+                      getJbdProfileName(g_jbdProfile), getJbdManufacturerName(), getJbdBarcode());
+        Serial.println("[BLE] Ready for connection from XiaoxiangBMS, JBD BMS, PowerQueen App, or Overkill Solar...");
     }
 
     initWiFiAndWebServer();
@@ -4352,6 +4565,25 @@ void loop() {
                 toggleEmulatorMode();
             } else if (cmd == "j" || cmd == "jbd") {
                 setEmulatorMode(PROTO_JBD);
+            } else if (cmd == "pq" || cmd == "powerqueen") {
+                setJbdProfile(JBD_PROFILE_POWERQUEEN);
+                setEmulatorMode(PROTO_JBD);
+            } else if (cmd == "os" || cmd == "overkill") {
+                setJbdProfile(JBD_PROFILE_OVERKILL);
+                setEmulatorMode(PROTO_JBD);
+            } else if (cmd == "std" || cmd == "xiaoxiang" || cmd == "jbd-std") {
+                setJbdProfile(JBD_PROFILE_STANDARD);
+                setEmulatorMode(PROTO_JBD);
+            } else if (cmd.startsWith("jbd profile ") || cmd.startsWith("jbd-prof ") || cmd.startsWith("jbd-profile ")) {
+                String sub = cmd.substring(cmd.lastIndexOf(' ') + 1);
+                if (sub == "pq" || sub == "powerqueen") {
+                    setJbdProfile(JBD_PROFILE_POWERQUEEN);
+                } else if (sub == "os" || sub == "overkill") {
+                    setJbdProfile(JBD_PROFILE_OVERKILL);
+                } else {
+                    setJbdProfile(JBD_PROFILE_STANDARD);
+                }
+                setEmulatorMode(PROTO_JBD);
             } else if (cmd == "y" || cmd == "daly" || cmd == "daly-bms") {
                 setEmulatorMode(PROTO_DALY);
             } else if (cmd == "a" || cmd == "ant" || cmd == "ant-bms") {
@@ -4448,7 +4680,10 @@ void loop() {
                 Serial.println("  'mac add <addr>'     : Add new MAC to profile list without rebooting");
                 Serial.println("  'mac del <1-N>'      : Delete MAC profile from stored list");
                 Serial.println("  'mac reset'          : Reset stored MAC profiles to factory defaults");
-                Serial.println("  'j' or 'jbd'         : Switch to JBD BMS emulator");
+                Serial.println("  'j' or 'jbd'         : Switch to JBD BMS emulator (Current profile)");
+                Serial.println("  'pq' / 'powerqueen'  : Switch to JBD PowerQueen profile (P-12100B / P-24100B)");
+                Serial.println("  'os' / 'overkill'    : Switch to JBD Overkill Solar profile (Overkill Solar BMS)");
+                Serial.println("  'std' / 'xiaoxiang'  : Switch to standard JBD / Xiaoxiang profile (BS-26A)");
                 Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
                 Serial.println("  'a' or 'ant'         : Switch to ANT BMS emulator");
                 Serial.println("  'k' or 'jk'          : Switch to JKBMS (JK02) emulator");

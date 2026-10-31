@@ -147,6 +147,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .badge-proto.active-redodo {
       background: rgba(210,153,34,0.2); border-color: var(--accent-orange); color: var(--accent-orange);
     }
+    .btn-jbd-prof.active {
+      background: rgba(88,166,255,0.3); border-color: var(--accent-blue); color: #fff; font-weight: 700;
+    }
 
     /* Slider row */
     .slider-row { display: flex; align-items: center; gap: 12px; }
@@ -296,6 +299,19 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <button id="btn-proto-jk" class="btn-toggle btn-proto" onclick="setProto('jk')">JKBMS (JK-B2A)</button>
             <button id="btn-proto-redodo" class="btn-toggle btn-proto" onclick="setProto('redodo')">Redodo / LiTime</button>
           </div>
+
+          <!-- JBD Manufacturer Sub-Profile -->
+          <div id="jbd-profile-group" style="margin-top: 10px; padding: 10px 12px; background: rgba(56,139,253,0.08); border: 1px solid rgba(56,139,253,0.25); border-radius: 8px;">
+            <div class="control-label" style="margin-bottom: 8px;">
+              <span data-i18n="jbd_profile_select">Профіль виробника JBD:</span>
+              <span id="label-jbd-profile" style="color: var(--accent-blue); font-weight: 700;">JBD / Xiaoxiang</span>
+            </div>
+            <div class="btn-row">
+              <button id="btn-jbd-std" class="btn-toggle btn-jbd-prof active" onclick="setJbdProfile('standard')">JBD / Xiaoxiang (BS-26A)</button>
+              <button id="btn-jbd-pq" class="btn-toggle btn-jbd-prof" onclick="setJbdProfile('powerqueen')">PowerQueen (P-12100B)</button>
+              <button id="btn-jbd-os" class="btn-toggle btn-jbd-prof" onclick="setJbdProfile('overkill')">Overkill Solar (OS-BMS)</button>
+            </div>
+          </div>
         </div>
 
         <!-- Load simulation -->
@@ -382,6 +398,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         cell_config: "Конфігурація батареї (Кількість комірок)",
         custom_s: "Довільна (3..32S):",
         protocol_select: "Протокол емуляції BMS",
+        jbd_profile_select: "Профіль виробника JBD:",
         sim_mode: "Режим навантаження",
         discharge: "Розряд",
         charge: "Заряд",
@@ -407,6 +424,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         cell_config: "Battery Configuration (Cell Series)",
         custom_s: "Custom (3..32S):",
         protocol_select: "BMS Protocol Engine",
+        jbd_profile_select: "JBD Manufacturer Profile:",
         sim_mode: "Load Simulation Mode",
         discharge: "Discharge",
         charge: "Charge",
@@ -492,7 +510,25 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       } else {
         pBadge.className = 'badge badge-proto active-jbd';
         const b = document.getElementById('btn-proto-jbd'); if (b) b.className = 'btn-toggle btn-proto active-jbd';
-        document.getElementById('label-proto-name').textContent = 'JBD BMS (BS-26A)';
+        document.getElementById('label-proto-name').textContent = 'JBD BMS (' + (d.jbd_profile_name || 'BS-26A') + ')';
+      }
+
+      // JBD sub-profile UI
+      const jbdGrp = document.getElementById('jbd-profile-group');
+      if (d.proto === 'JBD') {
+        if (jbdGrp) jbdGrp.style.display = 'block';
+        const prof = d.jbd_profile || 'standard';
+        ['std', 'pq', 'os'].forEach(k => {
+          const b = document.getElementById('btn-jbd-' + k);
+          if (b) b.classList.remove('active');
+        });
+        const activeBtn = (prof === 'powerqueen') ? 'btn-jbd-pq' : ((prof === 'overkill') ? 'btn-jbd-os' : 'btn-jbd-std');
+        const b = document.getElementById(activeBtn);
+        if (b) b.classList.add('active');
+        const lbl = document.getElementById('label-jbd-profile');
+        if (lbl) lbl.textContent = d.jbd_profile_name || 'JBD / Xiaoxiang';
+      } else {
+        if (jbdGrp) jbdGrp.style.display = 'none';
       }
 
       // Cells badge
@@ -621,6 +657,15 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         body: JSON.stringify({ proto: proto })
       });
       setTimeout(fetchData, 1000);
+    }
+
+    async function setJbdProfile(prof) {
+      await fetch('/api/set-jbd-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: prof })
+      });
+      setTimeout(() => location.reload(), 1500);
     }
 
     async function setMode(mode) {

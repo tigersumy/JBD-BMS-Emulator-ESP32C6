@@ -27,8 +27,11 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
 ## 🚀 Key Features
 
 ### 📱 Mobile App & Client Compatibility
-- **JBD BMS (Official Jiabaida & Xiaoxiang Apps for iOS & Android)**:
-  - **100% native compatibility in JBD BMS mode (`BS-26A-072-005`)**.
+- **JBD BMS (Official Jiabaida, Xiaoxiang, PowerQueen & Overkill Solar Apps for iOS & Android)**:
+  - **100% native compatibility in JBD BMS mode** with selectable manufacturer sub-profiles:
+    - **Standard JBD / Xiaoxiang**: (`BS-26A-072-005` / `JBD-SP04S034`, MAC `A5:C2:3A:26:F2:C2`)
+    - **PowerQueen BMS**: (`P-12100B` 4S, `P-24100B` 8S, `P-48100B` 16S, MAC `A5:C2:3A:26:F2:C3`) — test native **PowerQueen BMS App**
+    - **Overkill Solar**: (`Overkill Solar 4S` / `8S` / `16S`, MAC `A5:C2:3A:26:F2:C4`) — test **Overkill Solar BMS App**
   - Proprietary PIN authentication handshake `FF AA 15` (default password `123456`).
   - Full access to "Parameters" and "About Battery" views (EEPROM read/write).
 - **Smart BMS (Official Daly BMS App for iOS & Android)**:
@@ -161,7 +164,10 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `mac del <1-N>`: Delete a MAC profile from the stored list.
 - `mac reset`: Reset stored MAC profiles to factory defaults.
 - `m` or `M`: Toggle protocol (**JBD** $\leftrightarrow$ **DALY**).
-- `j` or `jbd`: Force **JBD BMS** mode.
+- `j` or `jbd`: Force **JBD BMS** mode (current profile).
+- `pq` or `powerqueen`: Switch to **PowerQueen JBD** profile (`P-12100B` / `P-24100B`).
+- `os` or `overkill`: Switch to **Overkill Solar JBD** profile (`Overkill Solar BMS`).
+- `std` or `xiaoxiang`: Switch to **Standard JBD / Xiaoxiang** profile (`BS-26A`).
 - `y` or `daly`: Force **DALY BMS** mode.
 - `a` or `ant`: Force **ANT BMS** mode.
 - `k` or `jk`: Force **JKBMS** mode.
@@ -180,7 +186,7 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 
 ## 📱 Verified Client Compatibility
 
-1. **JBD BMS / Xiaoxiang App** (iOS & Android) — Full telemetry, EEPROM configuration, PIN authentication (`123456`), and individual cell monitoring in JBD mode (`BS-26A-072-005`).
+1. **JBD BMS / Xiaoxiang / PowerQueen / Overkill Solar Apps** (iOS & Android) — Full telemetry, EEPROM configuration, PIN authentication (`123456`), and individual cell monitoring in JBD mode across all 3 sub-profiles (`BS-26A-072-005`, `P-12100B`, `Overkill Solar 8S`). Native compatibility with the official **PowerQueen BMS App** and **Overkill Solar App**.
 2. **Smart BMS App** (iOS & Android) — Official Daly app with full 8/16 cells, NTCs, Modbus D2 telemetry, hardware SN, firmware version, and FET switch controls in Daly mode (`DL-401804015491`).
 3. **Ant BMS App / MAYA / AntBMS v2** (iOS & Android) — 100% verified compatibility with modern `7E A1` protocol and legacy 140-byte telemetry. Full cell matrix, SOC ring gauge, temperatures (MOS, balancer, T1–T4), capacity (193.6/200Ah), and FET control in Ant mode (`ANT-BMS-08S`, `ANT-BMS-16S`).
 4. **JKBMS App (JiKong App)** (iOS & Android) — Official JiKong app tested and verified with complete 300-byte JK02 frames. Individual cell voltages (mV), wire resistance ($0.100\,\Omega$), active balancer telemetry, accurate SOC/current, and passcode unlock (`123456` or `1234`) in JK mode (`JK-B2A8S20P`, `JK-B2A16S20P`).

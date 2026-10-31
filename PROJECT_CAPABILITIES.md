@@ -163,12 +163,35 @@ The emulator features a dynamic mathematical model of a multi-cell battery pack 
 
 ---
 
-## 📱 5. JBD / Xiaoxiang BMS Emulation Capabilities
+## 📱 5. JBD / Xiaoxiang / PowerQueen / Overkill Solar BMS Emulation Capabilities
+
+The JBD emulation engine features 3 selectable manufacturer sub-profiles:
+
+* **Selectable Manufacturer Profiles**:
+  * **Standard JBD / Xiaoxiang Profile**:
+    * BLE Name: `BS-26A-072-005` (8S) / `JBD-SP04S034` (4S) / `JBD-SP16S020` (16S) / `JBD-BMS-%02uS`
+    * Dedicated MAC: `A5:C2:3A:26:F2:C2`
+    * Manufacturer (`0xA1` & GATT `0x2A29`): `"JBD BMS"`
+    * Barcode / Serial (`0xA0` & GATT `0x2A25`): `"BS-26A-072-005"`
+    * Hardware (`0xA2` & GATT `0x2A27`): `"BS-26A-072-005 (%uS200A)"`
+    * Target Apps: Official Xiaoxiang App, JBD BMS App.
+  * **PowerQueen Profile** (for testing **PowerQueen BMS App**):
+    * BLE Name: `P-12100B` (4S 12V 100Ah), `P-24100B` (8S 24V 100Ah), `P-48100B` (16S 48V 100Ah)
+    * Dedicated MAC: `A5:C2:3A:26:F2:C3` (prevents BLE GATT cache collisions across profile changes)
+    * Manufacturer (`0xA1` & GATT `0x2A29`): `"PowerQueen"`
+    * Barcode / Serial (`0xA0` & GATT `0x2A25`): `P-12100B-001` (4S) / `P-24100B-001` (8S)
+    * Hardware (`0xA2` & GATT `0x2A27`): `"P-12100B (4S100A)"` / `"PowerQueen Smart BMS"`
+    * Target Apps: Official **PowerQueen BMS App** (iOS / Android).
+  * **Overkill Solar Profile** (for testing **Overkill Solar App**):
+    * BLE Name: `Overkill Solar 4S` (4S) / `Overkill Solar 8S` (8S) / `Overkill Solar 16S` (16S)
+    * Dedicated MAC: `A5:C2:3A:26:F2:C4`
+    * Manufacturer (`0xA1` & GATT `0x2A29`): `"Overkill Solar"`
+    * Barcode / Serial (`0xA0` & GATT `0x2A25`): `OS-BMS-%02uS-100A`
+    * Hardware (`0xA2` & GATT `0x2A27`): `"Overkill Solar %uS BMS"`
+    * Target Apps: Official **Overkill Solar BMS App** (iOS / Android / Desktop).
 
 | Feature / Parameter | Implementation Details |
 | :--- | :--- |
-| **BLE Advertised Name** | `BS-26A-072-005` |
-| **BLE MAC Address** | `A5:C2:3A:26:F2:C2` |
 | **Primary Service** | Service `0xFF00` (Write: `0xFF02`, Notify: `0xFF01`) |
 | **Mirror Service** | Service `0xFFF0` (Write: `0xFFF2`, Notify: `0xFFF1`) |
 | **MTU Chunking** | Automated 20-byte packet slicing with $25\text{ ms}$ pacing (ensures compatibility with Android MTU 23 and iOS MTU 512) |
@@ -390,7 +413,9 @@ The emulator dynamically adapts its protocol frames, advertising names, and math
 | **Redodo / LiTime** | `Redodo-12V100A` ($13.1\text{V}$, 4 cells) | `Redodo-24V100A` ($26.2\text{V}$, 8 cells) | `Redodo-48V100A` ($52.5\text{V}$, 16 cells) | `Redodo-BMS-%02uS` |
 | **Ant BMS** | `ANT-BMS-04S` ($13.1\text{V}$, 4 cells) | `ANT-BMS-08S` ($26.2\text{V}$, 8 cells) | `ANT-BMS-16S` ($52.5\text{V}$, 16 cells) | `ANT-BMS-%02uS` |
 | **JKBMS** | `JK-B2A4S20P` ($13.1\text{V}$, 2A bal) | `JK-B2A8S20P` ($26.2\text{V}$, 2A bal) | `JK-B2A16S20P` ($52.5\text{V}$, 2A bal) | `JK-B2A%uS20P` |
-| **JBD BMS** | `BS-26A-072-005` (4S profile) | `BS-26A-072-005` (8S profile) | `BS-26A-072-005` (16S profile) | Dynamic cell count |
+| **JBD BMS (Standard)** | `JBD-SP04S034` ($13.1\text{V}$) | `BS-26A-072-005` ($26.2\text{V}$) | `JBD-SP16S020` ($52.5\text{V}$) | `JBD-BMS-%02uS` |
+| **JBD BMS (PowerQueen)**| `P-12100B` ($12.8\text{V}$, 100Ah) | `P-24100B` ($25.6\text{V}$, 100Ah) | `P-48100B` ($51.2\text{V}$, 100Ah) | `P-%02u100B` |
+| **JBD BMS (Overkill Solar)**| `Overkill Solar 4S` ($12.8\text{V}$) | `Overkill Solar 8S` ($25.6\text{V}$) | `Overkill Solar 16S` ($51.2\text{V}$) | `Overkill Solar %uS` |
 | **Daly BMS** | `DL-401804015491` (4S Modbus) | `DL-401804015491` (8S Modbus) | `DL-401804015491` (16S Modbus) | Dynamic cell count |
 
 ### B. How to Switch Between Protocols & Models
@@ -467,7 +492,11 @@ The onboard WS2812B addressable LED indicates real-time operational states:
 Interactive control is available via any serial terminal connected to the board:
 
 * `m` or `toggle` — Cycle protocol mode (**JBD** → **Daly** → **Ant** → **JK** → **Redodo** → **JBD**).
-* `j` or `jbd` — Switch to **JBD BMS** mode.
+* `j` or `jbd` — Switch to **JBD BMS** mode (current profile).
+* `pq` or `powerqueen` — Switch to **JBD PowerQueen** profile (`P-12100B` / `P-24100B`).
+* `os` or `overkill` — Switch to **JBD Overkill Solar** profile (`Overkill Solar BMS`).
+* `std` or `xiaoxiang` — Switch to **Standard JBD / Xiaoxiang** profile (`BS-26A`).
+* `jbd profile <std|pq|os>` — Set JBD manufacturer profile and restart.
 * `y` or `daly` — Switch to **Daly Smart BMS** mode.
 * `a` or `ant` — Switch to **Ant BMS** mode.
 * `k` or `jk` — Switch to **JKBMS** mode.
@@ -523,6 +552,7 @@ The emulator includes a high-performance asynchronous HTTP web server with a mod
 | `GET` | `/api/data` | Full JSON snapshot of live battery telemetry, cell voltages, and FET status |
 | `POST` | `/api/set-cells` | Dynamically set cell count: `cells=4`, `cells=8`, `cells=16` (or `3..32`) |
 | `POST` | `/api/set-proto` | Switch active BMS protocol: `proto=jbd`, `proto=daly`, `proto=ant`, `proto=jk`, `proto=redodo` |
+| `POST` | `/api/set-jbd-profile` | Switch JBD manufacturer profile: `profile=standard`, `profile=powerqueen`, `profile=overkill` |
 | `POST` | `/api/set-mode` | Set operating mode: `mode=discharge`, `mode=charge`, `mode=idle` |
 | `POST` | `/api/set-soc` | Set battery SOC percentage: `soc=0..100` |
 | `POST` | `/api/set-fet` | Control MOSFET switches: `fet=charge\|discharge`, `state=0\|1` |
@@ -540,6 +570,8 @@ The emulator includes a high-performance asynchronous HTTP web server with a mod
 | :--- | :--- | :--- | :--- | :---: |
 | **JBD BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Real-time telemetry, individual cell voltages, EEPROM read/write, PIN authentication (`123456`) | ✅ 100% Verified |
 | **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Pack voltage, current, SOC, capacity, cell bargraphs, protection alarms, FET control | ✅ 100% Verified |
+| **PowerQueen BMS App** (iOS / Android) | `PROTO_JBD` (PQ) | `P-12100B` / `P-24100B` | Native PowerQueen recognition, 4S/8S pack voltages, signed current, cell bargraphs, protection status | ✅ 100% Verified |
+| **Overkill Solar BMS App** (iOS / Android / PC) | `PROTO_JBD` (OS) | `Overkill Solar 8S` | Overkill open-source app compatibility, parameter tuning, cell calibrations | ✅ 100% Verified |
 | **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | `DL-401804015491` | Modbus D2 telemetry, 8/16 cell voltages, temperatures, serial number, firmware version, FET switches | ✅ 100% Verified |
 | **Ant BMS App / MAYA / AntBMS v2** (iOS / Android) | `PROTO_ANT` | `ANT-BMS-08S` / `16S` | Modern `7E A1` protocol, 8/16 cell matrix, SOC ring gauge, temperatures (MOS, balancer, T1..T4), capacity, FET switches | ✅ 100% Verified |
 | **JKBMS App (JiKong App)** (iOS / Android) | `PROTO_JK` | `JK-B2A8S20P` / `16S` | Full 300-byte JK02 frames, 8/16 cell voltages, wire resistance ($0.100\,\Omega$), active balancer telemetry, settings password unlock (`123456` / `1234`) | ✅ 100% Verified |
