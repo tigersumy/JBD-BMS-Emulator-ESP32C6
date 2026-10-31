@@ -3374,8 +3374,9 @@ void sendRedodoTelemetry() {
     if (!g_deviceConnected || !pRedodoNotifyChar) return;
     uint8_t frame[105];
     buildRedodoTelemetryFrame(frame);
-    sendBleChunks(pRedodoNotifyChar, frame, sizeof(frame), 20, 15);
-    Serial.println("[REDODO TX] Sent Telemetry (105B in 6 chunks)");
+    pRedodoNotifyChar->setValue(frame, sizeof(frame));
+    pRedodoNotifyChar->notify();
+    Serial.println("[REDODO TX] Sent Telemetry (105B full frame)");
 }
 
 class RedodoWriteCallbacks : public NimBLECharacteristicCallbacks {
@@ -4317,6 +4318,9 @@ void setup() {
             NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
         );
         pRedodoNotifyChar->setCallbacks(new RedodoWriteCallbacks());
+        uint8_t initFrame[105];
+        buildRedodoTelemetryFrame(initFrame);
+        pRedodoNotifyChar->setValue(initFrame, sizeof(initFrame));
 
         // Write characteristic 0xFFE2 for official LiTime/Redodo apps & clients
         NimBLECharacteristic* pRedodoWriteChar = pRedodoService->createCharacteristic(
