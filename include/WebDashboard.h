@@ -324,7 +324,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
             </div>
             <div class="btn-row">
               <button id="btn-rd-litime" class="btn-toggle btn-rd-prof active" onclick="setRedodoProfile('litime')">LiTime (LT-24100B / LiTime App)</button>
-              <button id="btn-rd-redodo" class="btn-toggle btn-rd-prof" onclick="setRedodoProfile('redodo')">Redodo (Redodo-24V100A)</button>
+              <button id="btn-rd-redodo" class="btn-toggle btn-rd-prof" onclick="setRedodoProfile('redodo')">Redodo (R-24100B / Redodo App)</button>
+            </div>
+            <div style="margin-top: 10px; font-size: 0.85rem; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; border: 1px dashed rgba(210,153,34,0.4);">
+              <span>🔢 <b data-i18n="serial_num">Серійний номер (S/N):</b> <code id="label-redodo-sn" style="color: var(--accent-yellow); font-size: 0.95rem; font-weight: 700; user-select: all;">ALPZ240724100BXX001Z</code></span>
+              <button class="btn-sm" onclick="copySn()" style="cursor: pointer; padding: 4px 10px; background: var(--accent-orange); border: none; border-radius: 4px; color: #fff; font-size: 0.75rem; font-weight: 700;">📋 Копіювати S/N</button>
             </div>
           </div>
         </div>
@@ -415,6 +419,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         protocol_select: "Протокол емуляції BMS",
         jbd_profile_select: "Профіль виробника JBD:",
         redodo_profile_select: "Профіль бренду LiTime / Redodo:",
+        serial_num: "Серійний номер (S/N):",
         sim_mode: "Режим навантаження",
         discharge: "Розряд",
         charge: "Заряд",
@@ -442,6 +447,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         protocol_select: "BMS Protocol Engine",
         jbd_profile_select: "JBD Manufacturer Profile:",
         redodo_profile_select: "LiTime / Redodo Brand Profile:",
+        serial_num: "Serial Number (S/N):",
         sim_mode: "Load Simulation Mode",
         discharge: "Discharge",
         charge: "Charge",
@@ -562,6 +568,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         if (b) b.classList.add('active');
         const lbl = document.getElementById('label-redodo-profile');
         if (lbl) lbl.textContent = d.redodo_profile_name || 'LiTime';
+        const snEl = document.getElementById('label-redodo-sn');
+        if (snEl && d.redodo_sn) snEl.textContent = d.redodo_sn;
       } else {
         if (rdGrp) rdGrp.style.display = 'none';
       }
@@ -710,6 +718,17 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         body: JSON.stringify({ profile: prof })
       });
       setTimeout(() => location.reload(), 1500);
+    }
+
+    function copySn() {
+      const snEl = document.getElementById('label-redodo-sn');
+      if (!snEl) return;
+      const text = snEl.textContent.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        alert('Серійний номер скопійовано в буфер обміну:\n' + text);
+      }).catch(() => {
+        prompt('Скопіюйте серійний номер вручну:', text);
+      });
     }
 
     async function setMode(mode) {

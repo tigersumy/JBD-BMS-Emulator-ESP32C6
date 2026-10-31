@@ -298,13 +298,39 @@ String getRedodoDeviceName() {
         }
     } else {
         if (g_bms.cell_count == 4) {
-            snprintf(buf, sizeof(buf), "Redodo-12V100A");
+            snprintf(buf, sizeof(buf), "R-12100B");
         } else if (g_bms.cell_count == 8) {
-            snprintf(buf, sizeof(buf), "Redodo-24V100A");
+            snprintf(buf, sizeof(buf), "R-24100B");
         } else if (g_bms.cell_count == 16) {
-            snprintf(buf, sizeof(buf), "Redodo-48V100A");
+            snprintf(buf, sizeof(buf), "R-48100B");
         } else {
-            snprintf(buf, sizeof(buf), "Redodo-BMS-%02uS", (unsigned int)g_bms.cell_count);
+            snprintf(buf, sizeof(buf), "R-BMS-%02uS", (unsigned int)g_bms.cell_count);
+        }
+    }
+    return String(buf);
+}
+
+String getRedodoSerialNumber() {
+    char buf[32];
+    if (g_redodoProfile == REDODO_PROFILE_LITIME) {
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "ALPZ120712100BXX001Z");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "ALPZ240724100BXX001Z");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "ALPZ480748100BXX001Z");
+        } else {
+            snprintf(buf, sizeof(buf), "ALPZ%02u07BMS%02uSXX001Z", (unsigned int)(g_bms.cell_count * 3.2f), (unsigned int)g_bms.cell_count);
+        }
+    } else {
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "RD120712100BXX001Z");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "RD240724100BXX001Z");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "RD480748100BXX001Z");
+        } else {
+            snprintf(buf, sizeof(buf), "RD%02u07BMS%02uSXX001Z", (unsigned int)(g_bms.cell_count * 3.2f), (unsigned int)g_bms.cell_count);
         }
     }
     return String(buf);
@@ -3468,6 +3494,7 @@ void setupWebServerRoutes() {
         doc["jbd_profile_name"] = getJbdProfileName(g_jbdProfile);
         doc["redodo_profile"] = (g_redodoProfile == REDODO_PROFILE_REDODO) ? "redodo" : "litime";
         doc["redodo_profile_name"] = getRedodoProfileName(g_redodoProfile);
+        doc["redodo_sn"] = getRedodoSerialNumber();
         doc["cell_count"] = g_bms.cell_count;
         doc["pack_voltage"] = g_bms.pack_voltage_10mv / 100.0f;
         doc["current"] = g_bms.current_10ma / 100.0f;
@@ -3931,7 +3958,7 @@ void setup() {
     } else if (g_proto == PROTO_REDODO) {
         Serial.printf("   ESP32-C6 Redodo / LiTime Monolithic BLE Emulator (%s)   \n", getRedodoProfileName(g_redodoProfile));
         Serial.printf("Device Name: %s\n", getRedodoDeviceName().c_str());
-        Serial.printf("Manufacturer: %s\n", getRedodoManufacturerName());
+        Serial.printf("Manufacturer: %s | Serial Number: %s\n", getRedodoManufacturerName(), getRedodoSerialNumber().c_str());
     } else {
         Serial.printf("   ESP32-C6 JBD BMS BLE Emulator (%s)   \n", getJbdProfileName(g_jbdProfile));
         Serial.printf("Device Name: %s\n", getActiveDeviceName().c_str());
@@ -4302,6 +4329,7 @@ void setup() {
         NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
         pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ)->setValue(redodoName.c_str());
         pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ)->setValue(getRedodoManufacturerName());
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A25), NIMBLE_PROPERTY::READ)->setValue(getRedodoSerialNumber().c_str());
         pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ)->setValue("V1.0.4");
         pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ)->setValue(
             (g_redodoProfile == REDODO_PROFILE_REDODO) ? "Redodo-BMS" : "LiTime-BMS"
