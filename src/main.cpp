@@ -56,11 +56,17 @@ const uint8_t DALY_BT_MAC[6]       = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xD1};
 const uint8_t ANT_BT_MAC[6]        = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xE1};
 const uint8_t JK_BT_MAC[6]         = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xF1};
 const uint8_t REDODO_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xB1};
+const uint8_t LITIME_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xB2}; // LiTime Monolithic BMS (LiTime App)
 
 enum JbdProfile {
     JBD_PROFILE_STANDARD = 0,    // Standard JBD / Xiaoxiang (BS-26A-072-005 / SP04S)
     JBD_PROFILE_POWERQUEEN = 1,  // PowerQueen (P-12100B / P-24100B)
     JBD_PROFILE_OVERKILL = 2     // Overkill Solar (Overkill Solar BMS)
+};
+
+enum RedodoProfile {
+    REDODO_PROFILE_LITIME = 0,  // LiTime (LT-12100B, LT-24100B...) - official LiTime iOS App default
+    REDODO_PROFILE_REDODO = 1   // Redodo (Redodo-12V100A, Redodo-24V100A...)
 };
 
 // ============================================================================
@@ -158,6 +164,7 @@ static unsigned long g_bootTime = 0;
 static bool g_doubleResetPending = false;
 
 static JbdProfile g_jbdProfile = JBD_PROFILE_STANDARD;
+static RedodoProfile g_redodoProfile = REDODO_PROFILE_LITIME;
 
 const char* getJbdProfileName(JbdProfile prof) {
     switch (prof) {
@@ -264,16 +271,41 @@ String getJkDeviceName() {
     return String(buf);
 }
 
+const char* getRedodoProfileName(RedodoProfile prof) {
+    switch (prof) {
+        case REDODO_PROFILE_REDODO: return "Redodo";
+        case REDODO_PROFILE_LITIME:
+        default:                    return "LiTime";
+    }
+}
+
+const char* getRedodoManufacturerName() {
+    if (g_redodoProfile == REDODO_PROFILE_REDODO) return "Redodo";
+    return "LiTime";
+}
+
 String getRedodoDeviceName() {
     char buf[32];
-    if (g_bms.cell_count == 4) {
-        snprintf(buf, sizeof(buf), "Redodo-12V100A");
-    } else if (g_bms.cell_count == 8) {
-        snprintf(buf, sizeof(buf), "Redodo-24V100A");
-    } else if (g_bms.cell_count == 16) {
-        snprintf(buf, sizeof(buf), "Redodo-48V100A");
+    if (g_redodoProfile == REDODO_PROFILE_LITIME) {
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "LT-12100B");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "LT-24100B");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "LT-48100B");
+        } else {
+            snprintf(buf, sizeof(buf), "LT-BMS-%02uS", (unsigned int)g_bms.cell_count);
+        }
     } else {
-        snprintf(buf, sizeof(buf), "Redodo-BMS-%02uS", (unsigned int)g_bms.cell_count);
+        if (g_bms.cell_count == 4) {
+            snprintf(buf, sizeof(buf), "Redodo-12V100A");
+        } else if (g_bms.cell_count == 8) {
+            snprintf(buf, sizeof(buf), "Redodo-24V100A");
+        } else if (g_bms.cell_count == 16) {
+            snprintf(buf, sizeof(buf), "Redodo-48V100A");
+        } else {
+            snprintf(buf, sizeof(buf), "Redodo-BMS-%02uS", (unsigned int)g_bms.cell_count);
+        }
     }
     return String(buf);
 }
@@ -389,6 +421,9 @@ void initDoubleResetAndMode() {
         g_bms.nominal_cap_10mah = 10000;
         g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
     }
+    uint8_t savedRdSub = s_prefs.getUChar("rd_sub", REDODO_PROFILE_LITIME);
+    if (savedRdSub > REDODO_PROFILE_REDODO) savedRdSub = REDODO_PROFILE_LITIME;
+    g_redodoProfile = (RedodoProfile)savedRdSub;
     updateJbdNames();
     g_bootTime = millis();
 }
@@ -478,7 +513,10 @@ void setEmulatorMode(EmulatorProtocol p) {
     if (p == PROTO_DALY) nextMac = DALY_BT_MAC;
     else if (p == PROTO_ANT) nextMac = ANT_BT_MAC;
     else if (p == PROTO_JK) nextMac = JK_BT_MAC;
-    else if (p == PROTO_REDODO) nextMac = REDODO_BT_MAC;
+    else if (p == PROTO_REDODO) {
+        if (g_redodoProfile == REDODO_PROFILE_REDODO) nextMac = REDODO_BT_MAC;
+        else nextMac = LITIME_BT_MAC;
+    }
     else if (p == PROTO_JBD) {
         if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) nextMac = POWERQUEEN_BT_MAC;
         else if (g_jbdProfile == JBD_PROFILE_OVERKILL) nextMac = OVERKILL_BT_MAC;
@@ -528,6 +566,24 @@ void setJbdProfile(JbdProfile prof) {
     }
     updateJbdNames();
     Serial.printf("\n[SYSTEM] JBD Profile set to %s (%s)\n", getJbdProfileName(prof), getJbdDeviceName().c_str());
+}
+
+void setRedodoProfile(RedodoProfile prof) {
+    if (prof > REDODO_PROFILE_REDODO) return;
+    g_redodoProfile = prof;
+    s_prefs.begin("bms_emu", false);
+    s_prefs.putUChar("rd_sub", (uint8_t)prof);
+    s_prefs.putBool("dr_flag", false);
+
+    if (g_proto == PROTO_REDODO) {
+        const uint8_t* nextMac = (prof == REDODO_PROFILE_REDODO) ? REDODO_BT_MAC : LITIME_BT_MAC;
+        memcpy(g_activeBtMac, nextMac, 6);
+        s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
+        int idx = findStoredMacIndex(g_activeBtMac);
+        s_prefs.putChar("mac_act", (int8_t)idx);
+    }
+    s_prefs.end();
+    Serial.printf("\n[SYSTEM] Redodo/LiTime Profile set to %s (%s)\n", getRedodoProfileName(prof), getRedodoDeviceName().c_str());
 }
 
 void saveMacConfigToNvs() {
@@ -601,7 +657,10 @@ void initMacConfig() {
         if (g_proto == PROTO_DALY) defMac = DALY_BT_MAC;
         else if (g_proto == PROTO_ANT) defMac = ANT_BT_MAC;
         else if (g_proto == PROTO_JK) defMac = JK_BT_MAC;
-        else if (g_proto == PROTO_REDODO) defMac = REDODO_BT_MAC;
+        else if (g_proto == PROTO_REDODO) {
+            if (g_redodoProfile == REDODO_PROFILE_REDODO) defMac = REDODO_BT_MAC;
+            else defMac = LITIME_BT_MAC;
+        }
         else if (g_proto == PROTO_JBD) {
             if (g_jbdProfile == JBD_PROFILE_POWERQUEEN) defMac = POWERQUEEN_BT_MAC;
             else if (g_jbdProfile == JBD_PROFILE_OVERKILL) defMac = OVERKILL_BT_MAC;
@@ -3407,6 +3466,8 @@ void setupWebServerRoutes() {
         doc["jbd_profile"] = (g_jbdProfile == JBD_PROFILE_POWERQUEEN) ? "powerqueen" :
                              ((g_jbdProfile == JBD_PROFILE_OVERKILL) ? "overkill" : "standard");
         doc["jbd_profile_name"] = getJbdProfileName(g_jbdProfile);
+        doc["redodo_profile"] = (g_redodoProfile == REDODO_PROFILE_REDODO) ? "redodo" : "litime";
+        doc["redodo_profile_name"] = getRedodoProfileName(g_redodoProfile);
         doc["cell_count"] = g_bms.cell_count;
         doc["pack_voltage"] = g_bms.pack_voltage_10mv / 100.0f;
         doc["current"] = g_bms.current_10ma / 100.0f;
@@ -3514,6 +3575,20 @@ void setupWebServerRoutes() {
         setJbdProfile(newProf);
         delay(200);
         setEmulatorMode(PROTO_JBD);
+    });
+
+    // API: Switch Redodo / LiTime Profile (LiTime <-> Redodo)
+    g_httpServer.on("/api/set-redodo-profile", HTTP_POST, []() {
+        if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        deserializeJson(doc, g_httpServer.arg("plain"));
+        String prof = doc["profile"] | "";
+        prof.toLowerCase();
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+        RedodoProfile newProf = (prof == "redodo" || prof == "rd") ? REDODO_PROFILE_REDODO : REDODO_PROFILE_LITIME;
+        setRedodoProfile(newProf);
+        delay(200);
+        setEmulatorMode(PROTO_REDODO);
     });
 
     // API: Set Simulation Mode (discharge, charge, idle)
@@ -3854,8 +3929,9 @@ void setup() {
         Serial.println("     ESP32-C6 JKBMS BLE Emulator (JK02 Protocol)      ");
         Serial.printf("Device Name: %s\n", getJkDeviceName().c_str());
     } else if (g_proto == PROTO_REDODO) {
-        Serial.println("   ESP32-C6 Redodo / LiTime Monolithic BLE Emulator    ");
+        Serial.printf("   ESP32-C6 Redodo / LiTime Monolithic BLE Emulator (%s)   \n", getRedodoProfileName(g_redodoProfile));
         Serial.printf("Device Name: %s\n", getRedodoDeviceName().c_str());
+        Serial.printf("Manufacturer: %s\n", getRedodoManufacturerName());
     } else {
         Serial.printf("   ESP32-C6 JBD BMS BLE Emulator (%s)   \n", getJbdProfileName(g_jbdProfile));
         Serial.printf("Device Name: %s\n", getActiveDeviceName().c_str());
@@ -4206,7 +4282,7 @@ void setup() {
         pServer = NimBLEDevice::createServer();
         pServer->setCallbacks(new ServerCallbacks());
 
-        // Primary Redodo Service 0xFFE0
+        // Primary Redodo / LiTime Service 0xFFE0
         NimBLEService* pRedodoService = pServer->createService(NimBLEUUID((uint16_t)0xFFE0));
         pRedodoNotifyChar = pRedodoService->createCharacteristic(
             NimBLEUUID((uint16_t)0xFFE1),
@@ -4215,23 +4291,34 @@ void setup() {
         );
         pRedodoNotifyChar->setCallbacks(new RedodoWriteCallbacks());
 
+        // Write characteristic 0xFFE2 for official LiTime/Redodo apps & clients
+        NimBLECharacteristic* pRedodoWriteChar = pRedodoService->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFE2),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        );
+        pRedodoWriteChar->setCallbacks(new RedodoWriteCallbacks());
+
         // Device Information Service 0x180A
         NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
         pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ)->setValue(redodoName.c_str());
-        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ)->setValue("Redodo");
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ)->setValue(getRedodoManufacturerName());
         pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ)->setValue("V1.0.4");
-        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ)->setValue("Redodo-BMS");
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ)->setValue(
+            (g_redodoProfile == REDODO_PROFILE_REDODO) ? "Redodo-BMS" : "LiTime-BMS"
+        );
 
         pServer->start();
 
-        // Advertising for Redodo
+        // Advertising for Redodo / LiTime
         NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
         NimBLEAdvertisementData advData;
         advData.setFlags(0x06);
         advData.setName(redodoName.c_str());
         advData.setCompleteServices(NimBLEUUID((uint16_t)0xFFE0));
 
+        // Scan Response Packet: 128-bit UUID for iOS CoreBluetooth service filtering + 6-byte MAC
         NimBLEAdvertisementData scanData;
+        scanData.setCompleteServices(NimBLEUUID("0000FFE0-0000-1000-8000-00805F9B34FB"));
         scanData.setManufacturerData(std::string((char*)activeMac, 6));
 
         pAdvertising->setAdvertisementData(advData);
@@ -4242,7 +4329,8 @@ void setup() {
 
         updateStatusLed();
         Serial.printf("[BLE] Advertising started successfully as '%s'.\n", redodoName.c_str());
-        Serial.println("[BLE] Ready for connection from Redodo Monitor (HTML/Web Bluetooth), LiTime App, or ESP32 Universal Monitor...");
+        Serial.printf("[BLE] Profile: %s | Manufacturer: %s\n", getRedodoProfileName(g_redodoProfile), getRedodoManufacturerName());
+        Serial.println("[BLE] Ready for connection from LiTime App (iOS/Android), Redodo App, Web Bluetooth Monitor, or ESP32 Universal Monitor...");
     } else {
         // Initialize NimBLE Device for JBD
         String jbdName = getActiveDeviceName();
@@ -4590,7 +4678,13 @@ void loop() {
                 setEmulatorMode(PROTO_ANT);
             } else if (cmd == "k" || cmd == "jk" || cmd == "jkbms") {
                 setEmulatorMode(PROTO_JK);
-            } else if (cmd == "r" || cmd == "redodo" || cmd == "litime") {
+            } else if (cmd == "lt" || cmd == "litime") {
+                setRedodoProfile(REDODO_PROFILE_LITIME);
+                setEmulatorMode(PROTO_REDODO);
+            } else if (cmd == "rd" || cmd == "redodo") {
+                setRedodoProfile(REDODO_PROFILE_REDODO);
+                setEmulatorMode(PROTO_REDODO);
+            } else if (cmd == "r") {
                 setEmulatorMode(PROTO_REDODO);
             } else if (cmd == "w" || cmd == "wifi") {
                 Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
@@ -4687,7 +4781,9 @@ void loop() {
                 Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
                 Serial.println("  'a' or 'ant'         : Switch to ANT BMS emulator");
                 Serial.println("  'k' or 'jk'          : Switch to JKBMS (JK02) emulator");
-                Serial.println("  'r' or 'redodo'      : Switch to Redodo / LiTime BMS emulator");
+                Serial.println("  'lt' or 'litime'     : Switch to LiTime profile (LT-12100B / LT-24100B, LiTime iOS/Android App)");
+                Serial.println("  'rd' or 'redodo'     : Switch to Redodo profile (Redodo-12V100A / Redodo-24V100A)");
+                Serial.println("  'r'                  : Switch to Redodo / LiTime BMS emulator (Current profile)");
                 Serial.println("  'm' or 'toggle'      : Cycle through BMS emulator modes");
                 Serial.println("  '4s' / '8s' / '16s'  : Set battery series count (or 'cells <N>', 3..32)");
                 Serial.println("  'w' or 'wifi'        : Show Wi-Fi status, IP, SSID & signal");

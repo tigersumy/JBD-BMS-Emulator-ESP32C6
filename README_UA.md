@@ -16,7 +16,7 @@
 2. **Daly Smart BMS (DL-xxxx)** (`DL-401804015491`)
 3. **Ant BMS (ANT-BMS серія)** (динамічні імена `ANT-BMS-08S`, `ANT-BMS-16S`, `ANT-BMS-24S`)
 4. **JKBMS (JiKong протокол JK02)** (динамічні імена `JK-B2A8S20P`, `JK-B2A16S20P`, `JK-B2A24S20P`)
-5. **Redodo / LiTime Monolithic BMS** (динамічні імена `Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`)
+5. **Redodo / LiTime Monolithic BMS** (динамічні імена `LT-12100B`, `LT-24100B`, `LT-48100B` для LiTime; `Redodo-12V100A`, `Redodo-24V100A` для Redodo)
 
 Проєкт розроблено для швидкого тестування, калібрування діагностичних шлюзів (ESP32 Universal Monitor / Tailscale Probe), інверторів (Growatt, Deye, Datouboss, Sandisolar, Victron), систем автоматизації Home Assistant / ESPHome та перевірки офіційних мобільних додатків без необхідності підключення до небезпечної високовольтної акумуляторної батареї.
 
@@ -48,8 +48,10 @@
   - 300-байтні кадри телеметрії JK02 через сервіс `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
   - Сервіс інформації про пристрій `0x180A`, команди CellInfo (`0x96`), налаштувань (`0x97`) та керування ключами (`0x1D`/`0x1E`/`0x1F`).
 - **Redodo / LiTime BMS (Офіційні додатки LiTime / Redodo та Web Bluetooth)**:
-  - **100% сумісність у режимі Redodo (`Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`)**.
-  - 105-байтні Little-Endian кадри телеметрії через сервіс `0xFFE0` / характеристику `0xFFE1`.
+  - **100% нативна сумісність з офіційним додатком LiTime (iOS та Android) та Redodo App**.
+  - Динамічний вибір суб-профілю бренду: **LiTime** (`LT-12100B`, `LT-24100B`, `LT-48100B`) та **Redodo** (`Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`).
+  - 105-байтні Little-Endian кадри телеметрії через сервіс `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
+  - Пакет Scan Response містить 128-бітний UUID `0000FFE0-0000-1000-8000-00805F9B34FB` для коректної фільтрації службами Apple CoreBluetooth на iPhone/iPad.
   - Підтримка опитування (`00 00 04 01 13 55 AA 17`), напруг до 16 комірок, напруги клем та суми, знакового струму, 3 температур (комірки, MOS, навколишнє середовище), ємності та SOC.
   - Повна сумісність з автономним веб-монітором HTML5 Web Bluetooth (`redodo_monitor.html`).
 - **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale Web Dashboard)**:
@@ -171,7 +173,9 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `y` або `daly`: Примусово встановити режим **DALY BMS**.
 - `a` або `ant`: Примусово встановити режим **ANT BMS**.
 - `k` або `jk`: Примусово встановити режим **JKBMS**.
-- `r` або `redodo`: Примусово встановити режим **Redodo / LiTime BMS**.
+- `lt` або `litime`: Перемкнути на профіль бренду **LiTime** (`LT-12100B` / `LT-24100B`, офіційний додаток LiTime iOS/Android).
+- `rd` або `redodo`: Перемкнути на профіль бренду **Redodo** (`Redodo-12V100A` / `Redodo-24V100A`).
+- `r`: Примусово встановити режим **Redodo / LiTime BMS** (поточний профіль).
 - `m` або `toggle`: Послідовне перемикання між усіма 5 режимами BMS.
 - `4s` / `8s` / `16s`: Встановити кількість комірок батареї (або `cells <N>`, 3..32).
 - `1` або `dis`: Режим активного розряду ($-17.00\text{ А}$) $\to$ 🟠 Помаранчевий LED.

@@ -16,7 +16,7 @@ The emulator implements a **5-Protocol Multi-Engine** and dynamically emulates t
 2. **Daly Smart BMS (DL-xxxx series)** (`DL-401804015491`)
 3. **Ant BMS (ANT-BMS series)** (dynamic `ANT-BMS-08S`, `ANT-BMS-16S`, `ANT-BMS-24S`)
 4. **JKBMS (JiKong JK02 protocol)** (dynamic `JK-B2A8S20P`, `JK-B2A16S20P`, `JK-B2A24S20P`)
-5. **Redodo / LiTime Monolithic BMS** (dynamic `Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`)
+5. **Redodo / LiTime Monolithic BMS** (dynamic `LT-12100B`, `LT-24100B`, `LT-48100B` in LiTime mode; `Redodo-12V100A`, `Redodo-24V100A` in Redodo mode)
 
 This project allows safe, rapid bench testing, debugging, and calibration of inverter gateways (Growatt, Deye, Datouboss, Sandisolar, Victron), Home Assistant / ESPHome setups, and official mobile apps without connecting to a physical, hazardous high-voltage battery pack.
 
@@ -48,8 +48,10 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
   - JK02 protocol with 300-byte telemetry frames via Service `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
   - Device Information Service `0x180A`, CellInfo (`0x96`), Settings (`0x97`), and register control (`0x1D`/`0x1E`/`0x1F`).
 - **Redodo / LiTime BMS (Official LiTime / Redodo Apps & Web Bluetooth)**:
-  - **100% native compatibility in Redodo mode (`Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`)**.
-  - 105-byte Little-Endian telemetry frames via Service `0xFFE0` / Characteristic `0xFFE1`.
+  - **100% native compatibility with official LiTime App (iOS & Android) and Redodo App**.
+  - Dynamic dual brand profile: **LiTime** (`LT-12100B`, `LT-24100B`, `LT-48100B`) and **Redodo** (`Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`).
+  - 105-byte Little-Endian telemetry frames via Service `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
+  - Scan response includes 128-bit Service UUID `0000FFE0-0000-1000-8000-00805F9B34FB` for Apple CoreBluetooth service filtering.
   - Polling command handling (`00 00 04 01 13 55 AA 17`), individual cell voltages (up to 16 cells), terminal and cell sum voltages, signed current, 3 temperatures (Cells, MOS, Ambient), capacity, and SOC.
   - Fully compatible with HTML5 Web Bluetooth dashboard (`redodo_monitor.html`).
 - **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale Web Dashboard)**:
@@ -171,7 +173,9 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `y` or `daly`: Force **DALY BMS** mode.
 - `a` or `ant`: Force **ANT BMS** mode.
 - `k` or `jk`: Force **JKBMS** mode.
-- `r` or `redodo`: Force **Redodo / LiTime BMS** mode.
+- `lt` or `litime`: Switch to **LiTime** profile (`LT-12100B` / `LT-24100B`, LiTime iOS/Android App).
+- `rd` or `redodo`: Switch to **Redodo** profile (`Redodo-12V100A` / `Redodo-24V100A`).
+- `r`: Force **Redodo / LiTime BMS** mode (current sub-profile).
 - `m` or `toggle`: Cycle through all 5 BMS emulator modes.
 - `4s` / `8s` / `16s`: Set battery series count (or `cells <N>`, 3..32).
 - `1` or `dis`: Active discharge mode ($-17.00\text{ A}$) $\to$ 🟠 Orange LED.

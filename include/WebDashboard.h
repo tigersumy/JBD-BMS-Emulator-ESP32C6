@@ -150,6 +150,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .btn-jbd-prof.active {
       background: rgba(88,166,255,0.3); border-color: var(--accent-blue); color: #fff; font-weight: 700;
     }
+    .btn-rd-prof.active {
+      background: rgba(210,153,34,0.3); border-color: var(--accent-orange); color: #fff; font-weight: 700;
+    }
 
     /* Slider row */
     .slider-row { display: flex; align-items: center; gap: 12px; }
@@ -312,6 +315,18 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
               <button id="btn-jbd-os" class="btn-toggle btn-jbd-prof" onclick="setJbdProfile('overkill')">Overkill Solar (OS-BMS)</button>
             </div>
           </div>
+
+          <!-- Redodo / LiTime Manufacturer Sub-Profile -->
+          <div id="redodo-profile-group" style="margin-top: 10px; padding: 10px 12px; background: rgba(210,153,34,0.08); border: 1px solid rgba(210,153,34,0.25); border-radius: 8px; display: none;">
+            <div class="control-label" style="margin-bottom: 8px;">
+              <span data-i18n="redodo_profile_select">Профіль бренду:</span>
+              <span id="label-redodo-profile" style="color: var(--accent-orange); font-weight: 700;">LiTime</span>
+            </div>
+            <div class="btn-row">
+              <button id="btn-rd-litime" class="btn-toggle btn-rd-prof active" onclick="setRedodoProfile('litime')">LiTime (LT-24100B / LiTime App)</button>
+              <button id="btn-rd-redodo" class="btn-toggle btn-rd-prof" onclick="setRedodoProfile('redodo')">Redodo (Redodo-24V100A)</button>
+            </div>
+          </div>
         </div>
 
         <!-- Load simulation -->
@@ -399,6 +414,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         custom_s: "Довільна (3..32S):",
         protocol_select: "Протокол емуляції BMS",
         jbd_profile_select: "Профіль виробника JBD:",
+        redodo_profile_select: "Профіль бренду LiTime / Redodo:",
         sim_mode: "Режим навантаження",
         discharge: "Розряд",
         charge: "Заряд",
@@ -425,6 +441,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         custom_s: "Custom (3..32S):",
         protocol_select: "BMS Protocol Engine",
         jbd_profile_select: "JBD Manufacturer Profile:",
+        redodo_profile_select: "LiTime / Redodo Brand Profile:",
         sim_mode: "Load Simulation Mode",
         discharge: "Discharge",
         charge: "Charge",
@@ -529,6 +546,24 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         if (lbl) lbl.textContent = d.jbd_profile_name || 'JBD / Xiaoxiang';
       } else {
         if (jbdGrp) jbdGrp.style.display = 'none';
+      }
+
+      // Redodo / LiTime sub-profile UI
+      const rdGrp = document.getElementById('redodo-profile-group');
+      if (d.proto === 'REDODO') {
+        if (rdGrp) rdGrp.style.display = 'block';
+        const prof = d.redodo_profile || 'litime';
+        ['litime', 'redodo'].forEach(k => {
+          const b = document.getElementById('btn-rd-' + k);
+          if (b) b.classList.remove('active');
+        });
+        const activeBtn = (prof === 'redodo') ? 'btn-rd-redodo' : 'btn-rd-litime';
+        const b = document.getElementById(activeBtn);
+        if (b) b.classList.add('active');
+        const lbl = document.getElementById('label-redodo-profile');
+        if (lbl) lbl.textContent = d.redodo_profile_name || 'LiTime';
+      } else {
+        if (rdGrp) rdGrp.style.display = 'none';
       }
 
       // Cells badge
@@ -661,6 +696,15 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     async function setJbdProfile(prof) {
       await fetch('/api/set-jbd-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: prof })
+      });
+      setTimeout(() => location.reload(), 1500);
+    }
+
+    async function setRedodoProfile(prof) {
+      await fetch('/api/set-redodo-profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile: prof })
