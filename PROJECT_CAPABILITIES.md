@@ -330,55 +330,90 @@ Engineered for the **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscal
   * Query Cell Info: `AA 55 90 EB 96 00 ...`
   * Query Settings: `AA 55 90 EB 01 00 ...`
   * Switch register writes: `0x1D` (Charge MOS), `0x1E` (Discharge MOS), `0x1F` (Balancer).
-  * Auto three-frame burst upon connection/subscription (`Device Info` $\to$ `Settings` $\to$ `Cell Info`).
+  * Auto three-frame burst upon connection/subscription (`Device Info` $\to` `Settings` $\to` `Cell Info`).
 
 ---
 
-## 🎛️ 9. Model Configuration Profiles & Switching Guide (ANT, JK, JBD, Daly)
+## 🔋 9. Redodo / LiTime Monolithic BMS Emulation Specification
+
+* **Emulated Models & Profiles**:
+  * **`Redodo-12V100A`**: 4-cell LiFePO4 series pack ($12.8\text{V} / \approx 13.12\text{V}$, 100Ah, 4 cells).
+  * **`Redodo-24V100A`**: 8-cell LiFePO4 series pack ($25.6\text{V} / \approx 26.24\text{V}$, 100Ah / 200Ah, 8 cells).
+  * **`Redodo-48V100A`**: 16-cell LiFePO4 series pack ($51.2\text{V} / \approx 52.48\text{V}$, 100Ah, 16 cells).
+  * **Dynamic Model Naming**: Auto-formats as `Redodo-%02uS` when custom cell count is chosen.
+* **Default MAC Address**: `A5:C2:3A:26:F2:B1` (dedicated Redodo profile MAC prevents BLE caching conflicts).
+* **GATT Profile**:
+  * Primary Service `0xFFE0` (`0000ffe0-0000-1000-8000-00805f9b34fb`).
+  * Unified Communication Characteristic `0xFFE1` (`0000ffe1-0000-1000-8000-00805f9b34fb`) with `READ`, `WRITE`, `WRITE_NR`, `NOTIFY`, and `INDICATE`.
+  * Device Information Service `0x180A` (Model `0x2A24`, Manufacturer `0x2A29`, Firmware `0x2A26`, Hardware `0x2A27`).
+* **Client Polling Request Handling**:
+  * Recognizes the standard 8-byte Redodo / LiTime polling command:
+    ```hex
+    00 00 04 01 13 55 AA 17
+    ```
+  * Immediately responds via Notify with the complete 105-byte telemetry frame, and streams background updates every $1500\text{ ms}$.
+* **Response Telemetry Frame Structure (105 Bytes, Little-Endian)**:
+  * Transmission is streamed via `sendBleChunks()` in 20-byte BLE chunks (MTU=23 pacing), protected by FreeRTOS mutex `s_bleTxMutex`.
+  * **Byte 0..7 — Frame Header**:
+    * Bytes `0..1`: `0x00 0x00` (Preamble)
+    * Byte `2`: `0x61` (Data length: 97 bytes)
+    * Byte `3`: `0x01` (Function)
+    * Byte `4`: `0x93` (Reply identifier for `0x13 | 0x80`)
+    * Bytes `5..6`: `0x55 0xAA` (Magic signatures)
+    * Byte `7`: `0x00` (Status OK)
+  * **Bytes 8..11 — Terminal Voltage**: External battery terminal voltage in mV (uint32 Little-Endian, $1\text{ mV} = 0.001\text{ V}$).
+  * **Bytes 12..15 — Cell Sum Voltage**: Total sum of all cell voltages in mV (uint32 Little-Endian).
+  * **Bytes 16..47 — Cell Voltages 1..16**: Array of 16 cell voltages (uint16 Little-Endian in mV, unused cells set to 0).
+  * **Bytes 48..51 — Battery Current**: Signed current in mA (int32 Little-Endian, positive = charge, negative = discharge).
+  * **Bytes 52..57 — Temperature Sensors**: 3 temperatures in $1^\circ\text{C}$ (int16 Little-Endian: Temp 1 Cells, Temp 2 MOSFET, Temp 3 Ambient).
+  * **Bytes 58..59 — Cycle Count**: Battery charge/discharge cycles (uint16 Little-Endian).
+  * **Bytes 62..63 — Remaining Capacity**: Available capacity in $0.01\text{ Ah}$ (uint16 Little-Endian, e.g. $19400 = 194.00\text{ Ah}$).
+  * **Bytes 64..65 — Full Capacity**: Nominal capacity in $0.01\text{ Ah}$ (uint16 Little-Endian, e.g. $20000 = 200.00\text{ Ah}$).
+  * **Bytes 66..67 — Protection Flags**: Bitmask of alarms and protections.
+  * **Bytes 68..71 — Balancing Bitmask**: Active cell balancing indicators.
+  * **Bytes 90..91 — State of Charge (SOC)**: Integer percentage $0\dots 100\%$ (uint16 Little-Endian).
+  * **Byte 104 — Checksum**: Modulo 256 sum over bytes 0..103.
+* **Client Compatibility**:
+  * 100% verified with the standalone HTML5 Web Bluetooth dashboard (`redodo_monitor.html`).
+  * Compatible with official LiTime and Redodo mobile apps and third-party monitors.
+
+---
+
+## 🎛️ 10. Model Configuration Profiles & Switching Guide (Redodo, ANT, JK, JBD, Daly)
 
 The emulator dynamically adapts its protocol frames, advertising names, and mathematical simulation parameters according to the selected protocol and cell configuration:
 
 ### A. Emulated Model Matrix
 
-| Mode | 8S Configuration (24V Pack) | 16S Configuration (48V Pack) | 24S Configuration (72V Pack) | Custom Series (3S..32S) |
+| Mode | 4S (12V Pack) | 8S (24V Pack) | 16S (48V Pack) | Custom Series (3S..32S) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Ant BMS** | `ANT-BMS-08S` ($26.2\text{V}$, 8 cells) | `ANT-BMS-16S` ($52.5\text{V}$, 16 cells) | `ANT-BMS-24S` ($78.7\text{V}$, 24 cells) | `ANT-BMS-%02uS` |
-| **JKBMS** | `JK-B2A8S20P` ($26.2\text{V}$, 2A bal, 200A) | `JK-B2A16S20P` ($52.5\text{V}$, 2A bal, 200A) | `JK-B2A24S20P` ($78.7\text{V}$, 2A bal, 200A) | `JK-B2A%uS20P` |
-| **JBD BMS** | `BS-26A-072-005` (8S LiFePO4 profile) | `BS-26A-072-005` (16S LiFePO4 profile) | `BS-26A-072-005` (24S LiFePO4 profile) | Dynamic cell count |
-| **Daly BMS** | `DL-401804015491` (8S Modbus profile) | `DL-401804015491` (16S Modbus profile) | `DL-401804015491` (24S Modbus profile) | Dynamic cell count |
+| **Redodo / LiTime** | `Redodo-12V100A` ($13.1\text{V}$, 4 cells) | `Redodo-24V100A` ($26.2\text{V}$, 8 cells) | `Redodo-48V100A` ($52.5\text{V}$, 16 cells) | `Redodo-BMS-%02uS` |
+| **Ant BMS** | `ANT-BMS-04S` ($13.1\text{V}$, 4 cells) | `ANT-BMS-08S` ($26.2\text{V}$, 8 cells) | `ANT-BMS-16S` ($52.5\text{V}$, 16 cells) | `ANT-BMS-%02uS` |
+| **JKBMS** | `JK-B2A4S20P` ($13.1\text{V}$, 2A bal) | `JK-B2A8S20P` ($26.2\text{V}$, 2A bal) | `JK-B2A16S20P` ($52.5\text{V}$, 2A bal) | `JK-B2A%uS20P` |
+| **JBD BMS** | `BS-26A-072-005` (4S profile) | `BS-26A-072-005` (8S profile) | `BS-26A-072-005` (16S profile) | Dynamic cell count |
+| **Daly BMS** | `DL-401804015491` (4S Modbus) | `DL-401804015491` (8S Modbus) | `DL-401804015491` (16S Modbus) | Dynamic cell count |
 
 ### B. How to Switch Between Protocols & Models
 
 #### Method 1: Serial CLI Commands (Instant USB Terminal Switching)
 Connect to `/dev/cu.usbmodem*` at **115200 baud**:
 * **Protocol Switching**:
+  * Type `r` or `redodo` $\to$ Switches to **Redodo / LiTime BMS** mode (`Redodo-24V100A`, MAC `A5:C2:3A:26:F2:B1`).
   * Type `a` or `ant` $\to$ Switches to **Ant BMS** mode (`ANT-BMS-08S`, MAC `A5:C2:3A:26:F2:E1`).
   * Type `k` or `jk` $\to$ Switches to **JKBMS** mode (`JK-B2A8S20P`, MAC `A5:C2:3A:26:F2:F1`).
   * Type `j` or `jbd` $\to$ Switches to **JBD BMS** mode (`BS-26A-072-005`, MAC `A5:C2:3A:26:F2:C2`).
   * Type `y` or `daly` $\to$ Switches to **Daly Smart BMS** mode (`DL-401804015491`, MAC `A5:C2:3A:26:F2:D1`).
 * **Model & Cell Count Switching**:
-  * Type `8s` or `cells 8` $\to$ Sets $8\text{S}$ configuration (e.g. `ANT-BMS-08S` / `JK-B2A8S20P`).
-  * Type `16s` or `cells 16` $\to$ Sets $16\text{S}$ configuration (e.g. `ANT-BMS-16S` / `JK-B2A16S20P`).
-  * Type `24s` or `cells 24` $\to$ Sets $24\text{S}$ configuration (e.g. `ANT-BMS-24S` / `JK-B2A24S20P`).
+  * Type `4s` or `cells 4` $\to$ Sets $4\text{S}$ configuration (e.g. `Redodo-12V100A` / `ANT-BMS-04S`).
+  * Type `8s` or `cells 8` $\to$ Sets $8\text{S}$ configuration (e.g. `Redodo-24V100A` / `ANT-BMS-08S` / `JK-B2A8S20P`).
+  * Type `16s` or `cells 16` $\to$ Sets $16\text{S}$ configuration (e.g. `Redodo-48V100A` / `ANT-BMS-16S` / `JK-B2A16S20P`).
   * *All changes persist automatically in non-volatile NVS flash memory across reboot.*
-
-```text
-=== Example Switching Session via Serial CLI ===
-> a
-[SYSTEM] Mode set to ANT BMS (MAC: A5:C2:3A:26:F2:E1) -> Restarting...
-> 16s
-[SYSTEM] Cell count set to 16S! Pack voltage updated to 52.48V.
-[BLE] Advertising started successfully as 'ANT-BMS-16S'.
-> k
-[SYSTEM] Mode set to JK BMS (MAC: A5:C2:3A:26:F2:F1) -> Restarting...
-[BLE] Advertising started successfully as 'JK-B2A16S20P'.
-```
 
 #### Method 2: Physical Hardware Controls (BOOT Button @ GPIO 9)
 * **Runtime Long-Press (> 1.5s)**:
   * Press and hold the **BOOT** button on the ESP32 board.
   * The WS2812B RGB LED flashes amber/yellow during the hold, then turns **solid bright green** when the 1.5s threshold is reached.
-  * Release the button: the emulator cycles to the next protocol (**JBD** $\to$ **Daly** $\to$ **Ant** $\to$ **JK** $\to$ **JBD**) and performs a clean reboot with the new protocol MAC address.
+  * Release the button: the emulator cycles to the next protocol (**JBD** $\to$ **Daly** $\to$ **Ant** $\to$ **JK** $\to$ **Redodo** $\to$ **JBD**) and performs a clean reboot with the new protocol MAC address.
 * **Power-On Reset Hold**:
   * Hold the BOOT button while plugging the board into USB power until the LED lights white, then release to switch the protocol before startup.
 * **Double-Reset Quick Tap**:
@@ -386,12 +421,29 @@ Connect to `/dev/cu.usbmodem*` at **115200 baud**:
 
 #### Method 3: Embedded Web Dashboard (Wi-Fi AP & Station)
 * Connect your phone or PC to Wi-Fi **`BMS-Emulator-Setup`** (IP: `192.168.4.1`) or open **`http://bms-emulator.local`**.
-* Under **BMS Protocol Settings**, select **Ant BMS**, **JK BMS**, **JBD BMS**, or **Daly BMS** from the dropdown menu.
+* Under **BMS Protocol Settings**, click any of the 5 protocol toggle buttons: **JBD BMS**, **Daly BMS**, **Ant BMS**, **JKBMS**, or **Redodo / LiTime**.
 * Click the preset buttons (**4S**, **8S**, **16S**) or enter custom cell count ($3\dots 32$) to instantly switch models.
 
 ---
 
-## 🎨 10. Hardware Visual Indication (WS2812B RGB LED @ GPIO 8)
+## 🎨 11. Hardware Visual Indication (WS2812B RGB LED @ GPIO 8)
+
+* **Protocol Identification Flashes (Boot & Advertising)**:
+  * **🔴 Red**: JBD BMS mode active (`BS-26A-072-005`).
+  * **🟣 Magenta**: Daly Smart BMS mode active (`DL-401804015491`).
+  * **🔵 Blue**: Ant BMS mode active (`ANT-BMS-%02uS`).
+  * **🟠 Orange**: JKBMS mode active (`JK-B2A%uS20P`).
+  * **🟡 Yellow**: Redodo / LiTime mode active (`Redodo-24V100A`).
+* **Connection & Operation Status**:
+  * **🟢 Green**: Client connected, system in Standby / Idle (0A).
+  * **🩵 Cyan**: Active Charging (+25A).
+  * **Deep Glow (Protocol Color)**: Active Discharging (-17A).
+  * **⚪ White**: Battery fully charged (SOC 100%).
+  * **🟡 Flashing Yellow**: Protection / Alarm triggered.
+
+---
+
+## 💻 12. Serial CLI Command Reference (USB 115200 baud)
 
 The onboard WS2812B addressable LED indicates real-time operational states:
 
@@ -401,23 +453,25 @@ The onboard WS2812B addressable LED indicates real-time operational states:
 | 🟣 **Magenta** | Daly Smart BMS Advertising (waiting for connection) |
 | 🔵 **Blue** | Ant BMS Advertising (waiting for connection) |
 | 🟠 **Orange** | JKBMS Advertising (waiting for connection) |
+| 🟡 **Yellow** | Redodo / LiTime BMS Advertising (waiting for connection) |
 | 🟢 **Green** | Standby / Idle ($0.00\text{ A}$, connected) |
 | 🩵 **Cyan** | Active Battery Charge ($+25.00\text{ A}$) |
-| 🔵 / 🟠 | Active Discharge under load ($-17.00\text{ A}$) |
+| 🔵 / 🟠 / 🟡 | Active Discharge under load ($-17.00\text{ A}$) |
 | ⚪ **White** | Fully Charged ($100\%\text{ SOC}$) |
-| 🟡 **Yellow** | Protection / Alarm triggered |
+| 🟡 **Flashing Yellow** | Protection / Alarm triggered |
 
 ---
 
-## 💻 11. Serial CLI Command Reference (USB 115200 baud)
+## 💻 12. Serial CLI Command Reference (USB 115200 baud)
 
 Interactive control is available via any serial terminal connected to the board:
 
-* `m` or `toggle` — Cycle protocol mode (**JBD** → **Daly** → **Ant** → **JK**).
+* `m` or `toggle` — Cycle protocol mode (**JBD** → **Daly** → **Ant** → **JK** → **Redodo** → **JBD**).
 * `j` or `jbd` — Switch to **JBD BMS** mode.
 * `y` or `daly` — Switch to **Daly Smart BMS** mode.
 * `a` or `ant` — Switch to **Ant BMS** mode.
 * `k` or `jk` — Switch to **JKBMS** mode.
+* `r` or `redodo` — Switch to **Redodo / LiTime BMS** mode.
 * `mac` — Open BLE Adapter MAC address manager menu.
 * `mac <1-N>` — Select stored MAC profile (e.g. `mac 2`).
 * `mac set <addr>` — Manually set active MAC (e.g. `mac set A5:C2:37:2D:5C:A9`).
@@ -434,7 +488,7 @@ Interactive control is available via any serial terminal connected to the board:
 
 ---
 
-## 🌐 12. Embedded Wi-Fi Web Dashboard & Network Architecture (Modes A & B)
+## 🌐 13. Embedded Wi-Fi Web Dashboard & Network Architecture (Modes A & B)
 
 The emulator includes a high-performance asynchronous HTTP web server with a modern Dark Glassmorphic web dashboard (matching the aesthetics of the SandiSolar and Universal BMS Monitor projects), running concurrently alongside the NimBLE BLE stack without performance degradation:
 
@@ -459,35 +513,7 @@ The emulator includes a high-performance asynchronous HTTP web server with a mod
   * Operating modes: **Discharge** ($-17\text{ A}$), **Charge** ($+25\text{ A}$), and **Standby** ($0\text{ А}$).
   * Interactive SOC slider ($0\dots 100\%$) with real-time recalculation of cell voltages and remaining capacity.
   * Independent **Charge MOSFET** and **Discharge MOSFET** switch controls.
-  * 1-click protocol switch: **JBD BMS** $\leftrightarrow$ **Daly Smart BMS** $\leftrightarrow$ **Ant BMS** $\leftrightarrow$ **JK BMS**.
-* **Web OTA Firmware Update**:
-  * Seamless browser-based OTA firmware upgrade by uploading a `.bin` image without requiring a physical USB connection.
-
-### C. REST API Reference
-| Method | Endpoint | Description & Parameters |
-| :--- | :--- | :--- |
-| `GET` | `/api/data` | Full JSON snapshot of live battery telemetry, cell voltages, and FET status |
-| `POST` | `/api/set-cells` | Update battery series count (`cells=4`, `cells=8`, `cells=16`, `3..32`) |
-| `POST` | `/api/set-proto` | Update active BMS protocol (`proto=jbd`, `proto=daly`, `proto=ant`, `proto=jk`) |
-| `POST` | `/api/restart` | Software reboot of the ESP32 microcontroller |
-| `POST` | `/update` | Web OTA binary image upload endpoint |
-
----
-
-## 📱 13. Verified Client Compatibility
-
-| Client / Application | Protocol Standard | Target Device Name | Verified Features | Verification Status |
-| :--- | :--- | :--- | :--- | :---: |
-| **JBD BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Real-time telemetry, individual cell voltages, EEPROM read/write, PIN authentication (`123456`) | ✅ 100% Verified |
-| **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Pack voltage, current, SOC, capacity, cell bargraphs, protection alarms, FET control | ✅ 100% Verified |
-| **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | `DL-401804015491` | Modbus D2 telemetry, 8/16 cell voltages, temperatures, serial number, firmware version, FET switches | ✅ 100% Verified |
-| **Ant BMS App / MAYA / AntBMS v2** (iOS / Android) | `PROTO_ANT` | `ANT-BMS-08S` / `16S` | Modern `7E A1` protocol, 8/16 cell matrix, SOC ring gauge, temperatures (MOS, balancer, T1..T4), capacity, FET switches | ✅ 100% Verified |
-| **JKBMS App (JiKong App)** (iOS / Android) | `PROTO_JK` | `JK-B2A8S20P` / `16S` | Full 300-byte JK02 frames, 8/16 cell voltages, wire resistance ($0.100\,\Omega$), active balancer telemetry, settings password unlock (`123456` / `1234`) | ✅ 100% Verified |
-| **Universal BMS Monitor** (ESP32-S3 Probe) | All 4 Protocols | Dynamic Auto-detect | Automatic protocol detection, high-rate BLE polling, Tailscale remote web dashboard integration | ✅ 100% Verified |
-| **ESPHome BMS Components** | All 4 Protocols | Standard UUIDs | Native integration with `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble` | ✅ 100% Verified |
-  * Interactive SOC slider ($0\dots 100\%$) with real-time recalculation of cell voltages and remaining capacity.
-  * Independent **Charge MOSFET** and **Discharge MOSFET** switch controls.
-  * 1-click protocol switch: **JBD BMS** $\leftrightarrow$ **Daly Smart BMS**.
+  * 1-click protocol switch: **JBD BMS** $\leftrightarrow$ **Daly Smart BMS** $\leftrightarrow$ **Ant BMS** $\leftrightarrow$ **JKBMS** $\leftrightarrow$ **Redodo / LiTime**.
 * **Web OTA Firmware Update**:
   * Seamless browser-based OTA firmware upgrade by uploading a `.bin` image without requiring a physical USB connection.
 
@@ -496,8 +522,8 @@ The emulator includes a high-performance asynchronous HTTP web server with a mod
 | :--- | :--- | :--- |
 | `GET` | `/api/data` | Full JSON snapshot of live battery telemetry, cell voltages, and FET status |
 | `POST` | `/api/set-cells` | Dynamically set cell count: `cells=4`, `cells=8`, `cells=16` (or `3..32`) |
-| `POST` | `/api/set-proto` | Switch active BMS protocol: `proto=jbd` or `proto=daly` |
-| `POST` | `/api/set-mode` | Set operating mode: `mode=discharge`, `mode=charge`, `mode=standby` |
+| `POST` | `/api/set-proto` | Switch active BMS protocol: `proto=jbd`, `proto=daly`, `proto=ant`, `proto=jk`, `proto=redodo` |
+| `POST` | `/api/set-mode` | Set operating mode: `mode=discharge`, `mode=charge`, `mode=idle` |
 | `POST` | `/api/set-soc` | Set battery SOC percentage: `soc=0..100` |
 | `POST` | `/api/set-fet` | Control MOSFET switches: `fet=charge\|discharge`, `state=0\|1` |
 | `GET` | `/api/scan-wifi` | Scan nearby Wi-Fi networks returning list of SSIDs and signal RSSI |
@@ -508,7 +534,36 @@ The emulator includes a high-performance asynchronous HTTP web server with a mod
 
 ---
 
-## 📁 11. Binary Releases & Flashing Guide
+## 📱 14. Verified Client Compatibility
+
+| Client / Application | Protocol Standard | Target Device Name | Verified Features | Verification Status |
+| :--- | :--- | :--- | :--- | :---: |
+| **JBD BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Real-time telemetry, individual cell voltages, EEPROM read/write, PIN authentication (`123456`) | ✅ 100% Verified |
+| **Xiaoxiang BMS App** (iOS / Android) | `PROTO_JBD` | `BS-26A-072-005` | Pack voltage, current, SOC, capacity, cell bargraphs, protection alarms, FET control | ✅ 100% Verified |
+| **Smart BMS App** (Daly, iOS / Android) | `PROTO_DALY` | `DL-401804015491` | Modbus D2 telemetry, 8/16 cell voltages, temperatures, serial number, firmware version, FET switches | ✅ 100% Verified |
+| **Ant BMS App / MAYA / AntBMS v2** (iOS / Android) | `PROTO_ANT` | `ANT-BMS-08S` / `16S` | Modern `7E A1` protocol, 8/16 cell matrix, SOC ring gauge, temperatures (MOS, balancer, T1..T4), capacity, FET switches | ✅ 100% Verified |
+| **JKBMS App (JiKong App)** (iOS / Android) | `PROTO_JK` | `JK-B2A8S20P` / `16S` | Full 300-byte JK02 frames, 8/16 cell voltages, wire resistance ($0.100\,\Omega$), active balancer telemetry, settings password unlock (`123456` / `1234`) | ✅ 100% Verified |
+| **Redodo / LiTime Web Bluetooth & Apps** | `PROTO_REDODO` | `Redodo-24V100A` / `12V` | Service `0xFFE0` / `0xFFE1`, 105-byte Little-Endian frames, cell voltages 1..16, pack voltages, signed current, temperatures, HTML5 Web Bluetooth dashboard (`redodo_monitor.html`) | ✅ 100% Verified |
+| **Universal BMS Monitor** (ESP32-S3 Probe) | All 5 Protocols | Dynamic Auto-detect | Automatic protocol detection, high-rate BLE polling, Tailscale remote web dashboard integration | ✅ 100% Verified |
+| **ESPHome BMS Components** | All 5 Protocols | Standard UUIDs | Native integration with `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble` | ✅ 100% Verified |
+
+---
+
+## 🔮 15. Architectural Knowledge Base & Future Enhancements
+
+The project repository preserves technical specifications for upcoming advanced integrations:
+1. **Victron Energy Encrypted BLE Advertising (`victron_ble_encrypted_protocol.md`)**:
+   * Passive connectionless telemetry using Company ID `0x02E1` and hardware-accelerated **AES-128 in Counter Mode (CTR)** (`esp_aes.h`).
+   * Enables background broadcast as **Victron SmartShunt / BMV-712** readable by VictronConnect, Home Assistant Victron BLE integration, and Venus OS without occupying a GATT connection slot.
+2. **Edge DSP Energy Accumulator (`esp32_edge_dsp_energy_algorithms.md`)**:
+   * Trapezoidal integration of session and daily charge/discharge energy ($\text{Wh}_{charge}$, $\text{Wh}_{discharge}$, $\text{Ah}_{charge}$, $\text{Ah}_{discharge}$).
+   * Deadband current noise suppression ($|I| < 0.05\text{ A}$) and connection gap segmentation ($\Delta t > 30\text{ s}$).
+3. **MQTT Telemetry Publisher (`tele/bms/state`)**:
+   * Background publishing of structured JSON payloads over local Wi-Fi for instantaneous Homebridge, Home Assistant, and Node-RED ingestion.
+
+---
+
+## 📁 16. Binary Releases & Flashing Guide
 
 * **Source Code**: [`src/main.cpp`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/src/main.cpp)
 * **Mode Switcher Script**: [`switch_mode.sh`](file:///Users/ihormchakraborty/mqtt/JBD-bms-emulator/switch_mode.sh)

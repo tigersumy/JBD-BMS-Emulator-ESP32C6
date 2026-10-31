@@ -1,4 +1,4 @@
-# 🔋 ESP32-C6 4-in-1 Universal BMS BLE Emulator: JBD, Daly, Ant BMS & JKBMS
+# 🔋 ESP32-C6 5-in-1 Universal BMS BLE Emulator: JBD, Daly, Ant BMS, JKBMS & Redodo / LiTime
 
 <p align="center">
   <a href="README.md"><b>English README</b></a> |
@@ -11,11 +11,12 @@
 
 A full-featured, standalone hardware-in-the-loop (HIL) battery management system (BMS) emulator powered by the **ESP32-C6** microcontroller (also compatible with **ESP32-S3**).
 
-The emulator implements a **Quad-Protocol Engine** and dynamically emulates the 4 most popular smart BMS standards in the world:
+The emulator implements a **5-Protocol Multi-Engine** and dynamically emulates the 5 most popular smart BMS standards in the world:
 1. **JBD / Xiaoxiang / Jiabaida / Overkill Solar BMS** (`BS-26A-072-005`)
 2. **Daly Smart BMS (DL-xxxx series)** (`DL-401804015491`)
-3. **Ant BMS (ANT-BMS series)** (dynamic `ANT-BMS-08S`, `ANT-BMS-16S`)
-4. **JKBMS (JiKong JK02 protocol)** (dynamic `JK-B2A8S20P`, `JK-B2A16S20P`)
+3. **Ant BMS (ANT-BMS series)** (dynamic `ANT-BMS-08S`, `ANT-BMS-16S`, `ANT-BMS-24S`)
+4. **JKBMS (JiKong JK02 protocol)** (dynamic `JK-B2A8S20P`, `JK-B2A16S20P`, `JK-B2A24S20P`)
+5. **Redodo / LiTime Monolithic BMS** (dynamic `Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`)
 
 This project allows safe, rapid bench testing, debugging, and calibration of inverter gateways (Growatt, Deye, Datouboss, Sandisolar, Victron), Home Assistant / ESPHome setups, and official mobile apps without connecting to a physical, hazardous high-voltage battery pack.
 
@@ -43,8 +44,13 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
   - **100% native compatibility in JKBMS mode (`JK-B2A<N>S20P`)**.
   - JK02 protocol with 300-byte telemetry frames via Service `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
   - Device Information Service `0x180A`, CellInfo (`0x96`), Settings (`0x97`), and register control (`0x1D`/`0x1E`/`0x1F`).
+- **Redodo / LiTime BMS (Official LiTime / Redodo Apps & Web Bluetooth)**:
+  - **100% native compatibility in Redodo mode (`Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`)**.
+  - 105-byte Little-Endian telemetry frames via Service `0xFFE0` / Characteristic `0xFFE1`.
+  - Polling command handling (`00 00 04 01 13 55 AA 17`), individual cell voltages (up to 16 cells), terminal and cell sum voltages, signed current, 3 temperatures (Cells, MOS, Ambient), capacity, and SOC.
+  - Fully compatible with HTML5 Web Bluetooth dashboard (`redodo_monitor.html`).
 - **Universal BMS Diagnostic Monitor (ESP32-S3 Probe / Tailscale Web Dashboard)**:
-  - Automatic detection and telemetry streaming for all 4 BMS protocols over Tailscale.
+  - Automatic detection and telemetry streaming for all 5 BMS protocols over Tailscale.
 - **ESPHome / Home Assistant / Node-RED / Inverter Gateways**:
   - Native integration with standard `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble` components.
 
@@ -155,15 +161,19 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `mac del <1-N>`: Delete a MAC profile from the stored list.
 - `mac reset`: Reset stored MAC profiles to factory defaults.
 - `m` or `M`: Toggle protocol (**JBD** $\leftrightarrow$ **DALY**).
-- `j` or `J`: Force **JBD BMS** mode.
-- `y` or `Y`: Force **DALY BMS** mode.
-- `1` or `d`: Active discharge mode ($-17.00\text{ A}$) $\to$ 🟠 Orange LED.
-- `2` or `c`: Active charge mode ($+25.00\text{ A}$) $\to$ 🩵 Cyan LED.
-- `0` or `s`: Standby mode ($0.00\text{ A}$) $\to$ 🟢 Green LED.
-- `b` or `B`: Toggle active balancing simulation.
-- `f` or `F`: Toggle Charge/Discharge FET switches.
+- `j` or `jbd`: Force **JBD BMS** mode.
+- `y` or `daly`: Force **DALY BMS** mode.
+- `a` or `ant`: Force **ANT BMS** mode.
+- `k` or `jk`: Force **JKBMS** mode.
+- `r` or `redodo`: Force **Redodo / LiTime BMS** mode.
+- `m` or `toggle`: Cycle through all 5 BMS emulator modes.
+- `4s` / `8s` / `16s`: Set battery series count (or `cells <N>`, 3..32).
+- `1` or `dis`: Active discharge mode ($-17.00\text{ A}$) $\to$ 🟠 Orange LED.
+- `2` or `chg`: Active charge mode ($+25.00\text{ A}$) $\to$ 🩵 Cyan LED.
+- `0` or `idle`: Standby mode ($0.00\text{ A}$) $\to$ 🟢 Green LED.
+- `f` or `fet`: Toggle Charge/Discharge FET switches.
 - `+` / `-`: Adjust SOC by $\pm 1\%$.
-- `t` or `T`: Send telemetry burst over BLE.
+- `t` or `telemetry`: Send telemetry burst over BLE.
 - `?` or `help`: Print command help.
 
 ---
@@ -174,5 +184,6 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 2. **Smart BMS App** (iOS & Android) — Official Daly app with full 8/16 cells, NTCs, Modbus D2 telemetry, hardware SN, firmware version, and FET switch controls in Daly mode (`DL-401804015491`).
 3. **Ant BMS App / MAYA / AntBMS v2** (iOS & Android) — 100% verified compatibility with modern `7E A1` protocol and legacy 140-byte telemetry. Full cell matrix, SOC ring gauge, temperatures (MOS, balancer, T1–T4), capacity (193.6/200Ah), and FET control in Ant mode (`ANT-BMS-08S`, `ANT-BMS-16S`).
 4. **JKBMS App (JiKong App)** (iOS & Android) — Official JiKong app tested and verified with complete 300-byte JK02 frames. Individual cell voltages (mV), wire resistance ($0.100\,\Omega$), active balancer telemetry, accurate SOC/current, and passcode unlock (`123456` or `1234`) in JK mode (`JK-B2A8S20P`, `JK-B2A16S20P`).
-5. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe via Tailscale) — Seamless automatic protocol detection and telemetry streaming across all 4 BMS standards (JBD, Daly, Ant, JK).
-6. **ESPHome / Home Assistant** — Native integration via standard components: `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble`.
+5. **Redodo / LiTime Monolithic BMS & Web Bluetooth** (Chrome / Web Bluetooth & native apps) — Full 105-byte frame telemetry via Service `0xFFE0` / Characteristic `0xFFE1`, verified with HTML5 Web Bluetooth dashboard (`redodo_monitor.html`), cell voltages 1..16, pack terminal and sum voltages, signed current, 3 temperature probes, remaining/full capacity, and SOC (`Redodo-12V100A`, `Redodo-24V100A`, `Redodo-48V100A`).
+6. **Universal BMS Diagnostic Monitor** (ESP32-S3 Probe via Tailscale) — Seamless automatic protocol detection and telemetry streaming across all 5 BMS standards (JBD, Daly, Ant, JK, Redodo).
+7. **ESPHome / Home Assistant** — Native integration via standard components: `jbd_bms`, `daly_bms`, `ant_bms`, and `jk_bms_ble`.

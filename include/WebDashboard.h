@@ -141,6 +141,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .btn-proto.active-jk {
       background: rgba(240,136,62,0.25); border-color: var(--accent-orange); color: var(--accent-orange);
     }
+    .btn-proto.active-redodo {
+      background: rgba(210,153,34,0.25); border-color: var(--accent-orange); color: var(--accent-orange);
+    }
+    .badge-proto.active-redodo {
+      background: rgba(210,153,34,0.2); border-color: var(--accent-orange); color: var(--accent-orange);
+    }
 
     /* Slider row */
     .slider-row { display: flex; align-items: center; gap: 12px; }
@@ -288,6 +294,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <button id="btn-proto-daly" class="btn-toggle btn-proto" onclick="setProto('daly')">Daly BMS (DL-4018)</button>
             <button id="btn-proto-ant" class="btn-toggle btn-proto" onclick="setProto('ant')">Ant BMS (ANT-BMS)</button>
             <button id="btn-proto-jk" class="btn-toggle btn-proto" onclick="setProto('jk')">JKBMS (JK-B2A)</button>
+            <button id="btn-proto-redodo" class="btn-toggle btn-proto" onclick="setProto('redodo')">Redodo / LiTime</button>
           </div>
         </div>
 
@@ -461,7 +468,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Protocol badges
       const pBadge = document.getElementById('proto-badge');
       pBadge.textContent = d.proto;
-      ['jbd', 'daly', 'ant', 'jk'].forEach(p => {
+      ['jbd', 'daly', 'ant', 'jk', 'redodo'].forEach(p => {
         const b = document.getElementById('btn-proto-' + p);
         if (b) b.className = 'btn-toggle btn-proto';
       });
@@ -478,6 +485,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         pBadge.className = 'badge badge-proto active-jk';
         const b = document.getElementById('btn-proto-jk'); if (b) b.className = 'btn-toggle btn-proto active-jk';
         document.getElementById('label-proto-name').textContent = 'JKBMS (JK-B2A)';
+      } else if (d.proto === 'REDODO') {
+        pBadge.className = 'badge badge-proto active-redodo';
+        const b = document.getElementById('btn-proto-redodo'); if (b) b.className = 'btn-toggle btn-proto active-redodo';
+        document.getElementById('label-proto-name').textContent = 'Redodo / LiTime Monolithic BMS';
       } else {
         pBadge.className = 'badge badge-proto active-jbd';
         const b = document.getElementById('btn-proto-jbd'); if (b) b.className = 'btn-toggle btn-proto active-jbd';

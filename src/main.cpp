@@ -41,7 +41,8 @@ enum EmulatorProtocol {
     PROTO_JBD = 0,
     PROTO_DALY = 1,
     PROTO_ANT = 2,
-    PROTO_JK = 3
+    PROTO_JK = 3,
+    PROTO_REDODO = 4
 };
 
 // PIN Code for JBD Authentication (System passkey & App-layer PIN)
@@ -52,6 +53,7 @@ const uint8_t TARGET_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xC2};
 const uint8_t DALY_BT_MAC[6]   = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xD1};
 const uint8_t ANT_BT_MAC[6]    = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xE1};
 const uint8_t JK_BT_MAC[6]     = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xF1};
+const uint8_t REDODO_BT_MAC[6] = {0xA5, 0xC2, 0x3A, 0x26, 0xF2, 0xB1};
 
 // ============================================================================
 // RGB LED Control with 50% Brightness Scaling
@@ -135,6 +137,9 @@ NimBLECharacteristic* pAntNusRx = nullptr;
 NimBLECharacteristic* pJkNotifyChar = nullptr;
 NimBLECharacteristic* pJkWriteChar = nullptr;
 
+// Redodo / LiTime Characteristics
+NimBLECharacteristic* pRedodoNotifyChar = nullptr;
+
 bool g_deviceConnected = false;
 unsigned long g_lastLogTime = 0;
 unsigned long g_lastSimTime = 0;
@@ -156,20 +161,36 @@ String getJkDeviceName() {
     return String(buf);
 }
 
+String getRedodoDeviceName() {
+    char buf[32];
+    if (g_bms.cell_count == 4) {
+        snprintf(buf, sizeof(buf), "Redodo-12V100A");
+    } else if (g_bms.cell_count == 8) {
+        snprintf(buf, sizeof(buf), "Redodo-24V100A");
+    } else if (g_bms.cell_count == 16) {
+        snprintf(buf, sizeof(buf), "Redodo-48V100A");
+    } else {
+        snprintf(buf, sizeof(buf), "Redodo-BMS-%02uS", (unsigned int)g_bms.cell_count);
+    }
+    return String(buf);
+}
+
 String getActiveDeviceName() {
-    if (g_proto == PROTO_DALY) return String(DALY_DEVICE_NAME);
-    if (g_proto == PROTO_ANT)  return getAntDeviceName();
-    if (g_proto == PROTO_JK)   return getJkDeviceName();
+    if (g_proto == PROTO_DALY)   return String(DALY_DEVICE_NAME);
+    if (g_proto == PROTO_ANT)    return getAntDeviceName();
+    if (g_proto == PROTO_JK)     return getJkDeviceName();
+    if (g_proto == PROTO_REDODO) return getRedodoDeviceName();
     return String(BLE_DEVICE_NAME);
 }
 
 const char* getProtoName(EmulatorProtocol p) {
     switch (p) {
-        case PROTO_DALY: return "DALY BMS";
-        case PROTO_ANT:  return "ANT BMS";
-        case PROTO_JK:   return "JK BMS";
+        case PROTO_DALY:   return "DALY BMS";
+        case PROTO_ANT:    return "ANT BMS";
+        case PROTO_JK:     return "JK BMS";
+        case PROTO_REDODO: return "REDODO BMS";
         case PROTO_JBD:
-        default:         return "JBD BMS";
+        default:           return "JBD BMS";
     }
 }
 
@@ -198,8 +219,8 @@ void checkBootButtonAtPowerOn() {
         if (armed) {
             s_prefs.begin("bms_emu", false);
             uint8_t cur = s_prefs.getUChar("proto", PROTO_JBD);
-            if (cur > PROTO_JK) cur = PROTO_JBD;
-            uint8_t nextProto = (cur + 1) % 4;
+            if (cur > PROTO_REDODO) cur = PROTO_JBD;
+            uint8_t nextProto = (cur + 1) % 5;
             s_prefs.putUChar("proto", nextProto);
             s_prefs.putBool("dr_flag", false);
             s_prefs.end();
@@ -210,6 +231,7 @@ void checkBootButtonAtPowerOn() {
                 if (nextProto == PROTO_DALY) setRgbLed(60, 0, 60);       // Magenta
                 else if (nextProto == PROTO_ANT) setRgbLed(0, 0, 60);     // Blue
                 else if (nextProto == PROTO_JK) setRgbLed(60, 30, 0);     // Orange
+                else if (nextProto == PROTO_REDODO) setRgbLed(50, 50, 0); // Yellow
                 else setRgbLed(60, 0, 0);                                 // Red
                 delay(120);
                 setRgbLed(0, 0, 0);
@@ -226,7 +248,7 @@ void initDoubleResetAndMode() {
     s_prefs.begin("bms_emu", false);
     bool doubleReset = s_prefs.getBool("dr_flag", false);
     uint8_t savedProto = s_prefs.getUChar("proto", PROTO_JBD);
-    if (savedProto > PROTO_JK) savedProto = PROTO_JBD;
+    if (savedProto > PROTO_REDODO) savedProto = PROTO_JBD;
 
     // Software restart or serial port open must never trigger an unintended protocol cycle
     if (reason == ESP_RST_SW) {
@@ -234,7 +256,7 @@ void initDoubleResetAndMode() {
     }
 
     if (doubleReset) {
-        savedProto = (savedProto + 1) % 4;
+        savedProto = (savedProto + 1) % 5;
         s_prefs.putUChar("proto", savedProto);
         s_prefs.putBool("dr_flag", false);
         Serial.printf("\n=======================================================\n");
@@ -276,7 +298,7 @@ void setCellCount(uint8_t cnt) {
 void setEmulatorMode(EmulatorProtocol p);
 
 void toggleEmulatorMode() {
-    uint8_t newProto = (g_proto + 1) % 4;
+    uint8_t newProto = (g_proto + 1) % 5;
     setEmulatorMode((EmulatorProtocol)newProto);
 }
 
@@ -340,6 +362,7 @@ void setEmulatorMode(EmulatorProtocol p) {
     if (p == PROTO_DALY) nextMac = DALY_BT_MAC;
     else if (p == PROTO_ANT) nextMac = ANT_BT_MAC;
     else if (p == PROTO_JK) nextMac = JK_BT_MAC;
+    else if (p == PROTO_REDODO) nextMac = REDODO_BT_MAC;
     memcpy(g_activeBtMac, nextMac, 6);
     s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
     int idx = findStoredMacIndex(g_activeBtMac);
@@ -352,6 +375,7 @@ void setEmulatorMode(EmulatorProtocol p) {
         if (p == PROTO_DALY) setRgbLed(60, 0, 60);
         else if (p == PROTO_ANT) setRgbLed(0, 0, 60);
         else if (p == PROTO_JK) setRgbLed(60, 30, 0);
+        else if (p == PROTO_REDODO) setRgbLed(50, 50, 0);
         else setRgbLed(60, 0, 0);
         delay(100);
         setRgbLed(0, 0, 0);
@@ -404,7 +428,11 @@ void initMacConfig() {
         memcpy(g_storedMacs[4].mac, JK_BT_MAC, 6);
         strncpy(g_storedMacs[4].label, "JK Original", sizeof(g_storedMacs[4].label));
 
-        g_storedMacCount = 5;
+        // Item 5: Default Redodo (A5:C2:3A:26:F2:B1)
+        memcpy(g_storedMacs[5].mac, REDODO_BT_MAC, 6);
+        strncpy(g_storedMacs[5].label, "Redodo Original", sizeof(g_storedMacs[5].label));
+
+        g_storedMacCount = 6;
         s_prefs.putUChar("mac_cnt", g_storedMacCount);
         for (uint8_t i = 0; i < g_storedMacCount; i++) {
             char keyM[12], keyL[12];
@@ -419,6 +447,7 @@ void initMacConfig() {
         if (g_proto == PROTO_DALY) defMac = DALY_BT_MAC;
         else if (g_proto == PROTO_ANT) defMac = ANT_BT_MAC;
         else if (g_proto == PROTO_JK) defMac = JK_BT_MAC;
+        else if (g_proto == PROTO_REDODO) defMac = REDODO_BT_MAC;
         memcpy(g_activeBtMac, defMac, 6);
         g_activeMacIndex = findStoredMacIndex(g_activeBtMac);
         s_prefs.putBytes("mac_cur", g_activeBtMac, 6);
@@ -472,6 +501,19 @@ void initMacConfig() {
             snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
             s_prefs.putBytes(keyM, JK_BT_MAC, 6);
             s_prefs.putString(keyL, "JK Original");
+        }
+
+        // Ensure Redodo Original profile is present in the list
+        if (findStoredMacIndex(REDODO_BT_MAC) < 0 && g_storedMacCount < MAX_STORED_MACS) {
+            memcpy(g_storedMacs[g_storedMacCount].mac, REDODO_BT_MAC, 6);
+            strncpy(g_storedMacs[g_storedMacCount].label, "Redodo Original", sizeof(g_storedMacs[g_storedMacCount].label));
+            g_storedMacCount++;
+            s_prefs.putUChar("mac_cnt", g_storedMacCount);
+            char keyM[12], keyL[12];
+            snprintf(keyM, sizeof(keyM), "mac_%u", g_storedMacCount - 1);
+            snprintf(keyL, sizeof(keyL), "mac_l_%u", g_storedMacCount - 1);
+            s_prefs.putBytes(keyM, REDODO_BT_MAC, 6);
+            s_prefs.putString(keyL, "Redodo Original");
         }
 
         if (s_prefs.getBytes("mac_cur", g_activeBtMac, 6) != 6) {
@@ -680,6 +722,9 @@ void updateStatusLed() {
         } else if (g_proto == PROTO_JK) {
             // 🟠 Orange: JKBMS Advertising / Waiting for BLE client
             setRgbLed(40, 20, 0);
+        } else if (g_proto == PROTO_REDODO) {
+            // 🟡 Yellow: Redodo / LiTime Advertising / Waiting for BLE client
+            setRgbLed(40, 40, 0);
         } else {
             // 🔴 Red: JBD Advertising / Waiting for Bluetooth client
             setRgbLed(40, 0, 0);
@@ -699,6 +744,7 @@ void updateStatusLed() {
             if (g_proto == PROTO_DALY) setRgbLed(0, 10, 50);
             else if (g_proto == PROTO_ANT) setRgbLed(0, 25, 45);
             else if (g_proto == PROTO_JK) setRgbLed(45, 12, 0);
+            else if (g_proto == PROTO_REDODO) setRgbLed(40, 30, 0);
             else setRgbLed(40, 14, 0);
         } else {
             // 🟢 Green: Standby / Idle (0A, connected)
@@ -2980,6 +3026,127 @@ class JkWriteCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 // ============================================================================
+// Redodo / LiTime Monolithic BMS (0xFFE0 / 0xFFE1) Frame Builders & Callbacks
+// ============================================================================
+void buildRedodoTelemetryFrame(uint8_t* frame) {
+    memset(frame, 0, 105);
+    // Header (8 bytes)
+    frame[0] = 0x00;
+    frame[1] = 0x00;
+    frame[2] = 0x61; // Data payload length (97 bytes)
+    frame[3] = 0x01; // Function
+    frame[4] = 0x93; // 0x13 | 0x80 response identifier
+    frame[5] = 0x55; // Magic signature 1
+    frame[6] = 0xAA; // Magic signature 2
+    frame[7] = 0x00; // Status OK
+
+    // Offset 8..11 (uint32_t LE): Terminal Voltage in mV
+    uint32_t termMv = (uint32_t)g_bms.pack_voltage_10mv * 10;
+    memcpy(&frame[8], &termMv, 4);
+
+    // Offset 12..15 (uint32_t LE): Cell Sum Voltage in mV
+    uint32_t sumMv = 0;
+    for (uint8_t i = 0; i < g_bms.cell_count && i < 16; ++i) {
+        sumMv += g_bms.cell_mv[i];
+    }
+    memcpy(&frame[12], &sumMv, 4);
+
+    // Offset 16..47 (16 * uint16_t LE): Cell Voltages 1..16 in mV
+    for (uint8_t i = 0; i < 16; ++i) {
+        uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0;
+        memcpy(&frame[16 + i * 2], &mv, 2);
+    }
+
+    // Offset 48..51 (int32_t LE): Current in mA (signed)
+    int32_t currentMa = (int32_t)g_bms.current_10ma * 10;
+    memcpy(&frame[48], &currentMa, 4);
+
+    // Offset 52..57 (3 * int16_t LE): Temperatures in °C
+    int16_t tCells = (int16_t)round((g_bms.ntc1_temp_01k - 2731.5f) / 10.0f);
+    int16_t tMos   = (int16_t)round((g_bms.ntc3_temp_01k - 2731.5f) / 10.0f);
+    int16_t tAmb   = (int16_t)round((g_bms.ntc2_temp_01k - 2731.5f) / 10.0f);
+    memcpy(&frame[52], &tCells, 2);
+    memcpy(&frame[54], &tMos, 2);
+    memcpy(&frame[56], &tAmb, 2);
+
+    // Offset 58..59 (uint16_t LE): Cycle count
+    uint16_t cycles = g_bms.cycle_count;
+    memcpy(&frame[58], &cycles, 2);
+
+    // Offset 62..63 (uint16_t LE): Remaining Capacity in 0.01 Ah
+    uint16_t remCap = g_bms.remain_cap_10mah;
+    memcpy(&frame[62], &remCap, 2);
+
+    // Offset 64..65 (uint16_t LE): Full Capacity in 0.01 Ah
+    uint16_t fullCap = g_bms.nominal_cap_10mah;
+    memcpy(&frame[64], &fullCap, 2);
+
+    // Offset 66..67 (uint16_t LE): Protection status
+    uint16_t prot = g_bms.protection_status;
+    memcpy(&frame[66], &prot, 2);
+
+    // Offset 68..71 (uint32_t LE): Balancing mask
+    uint32_t balMask = ((uint32_t)g_bms.balance_high << 16) | g_bms.balance_low;
+    memcpy(&frame[68], &balMask, 4);
+
+    // Offset 90..91 (uint16_t LE): State of Charge (SOC) %
+    uint16_t soc = g_bms.soc_percent;
+    memcpy(&frame[90], &soc, 2);
+
+    // Checksum at frame[104]
+    uint8_t csum = 0;
+    for (size_t i = 0; i < 104; ++i) {
+        csum += frame[i];
+    }
+    frame[104] = csum;
+}
+
+void sendRedodoTelemetry() {
+    if (!g_deviceConnected || !pRedodoNotifyChar) return;
+    uint8_t frame[105];
+    buildRedodoTelemetryFrame(frame);
+    sendBleChunks(pRedodoNotifyChar, frame, sizeof(frame), 20, 15);
+    Serial.println("[REDODO TX] Sent Telemetry (105B in 6 chunks)");
+}
+
+class RedodoWriteCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+        Serial.printf("[REDODO BLE] Subscribed to %s (subValue=%d)\n", pCharacteristic->getUUID().toString().c_str(), subValue);
+        if (subValue > 0) {
+            sendRedodoTelemetry();
+        }
+    }
+
+    void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        Serial.printf("[REDODO BLE] Read request on %s\n", pCharacteristic->getUUID().toString().c_str());
+        uint8_t frame[105];
+        buildRedodoTelemetryFrame(frame);
+        pCharacteristic->setValue(frame, sizeof(frame));
+    }
+
+    void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        std::string val = pCharacteristic->getValue();
+        if (val.empty()) return;
+        const uint8_t* data = (const uint8_t*)val.data();
+        size_t len = val.length();
+
+        Serial.printf("[REDODO RX] Write %u bytes: ", (unsigned int)len);
+        for (size_t i = 0; i < len; ++i) Serial.printf("%02X ", data[i]);
+        Serial.println();
+
+        // Check for Redodo poll request: 00 00 04 01 13 55 AA 17
+        if (len >= 7 && data[0] == 0x00 && data[1] == 0x00 && data[4] == 0x13 && data[5] == 0x55 && data[6] == 0xAA) {
+            Serial.println("[REDODO RX] Recognized Poll Request (0x13 0x55 0xAA) -> replying with 105B frame");
+            sendRedodoTelemetry();
+            return;
+        }
+
+        // Generic query fallback
+        sendRedodoTelemetry();
+    }
+};
+
+// ============================================================================
 // Wi-Fi AP & Station Web Dashboard Engine
 // ============================================================================
 static WebServer g_httpServer(80);
@@ -3050,6 +3217,7 @@ void setupWebServerRoutes() {
         if (g_proto == PROTO_DALY) protoStr = "DALY";
         else if (g_proto == PROTO_ANT) protoStr = "ANT";
         else if (g_proto == PROTO_JK) protoStr = "JK";
+        else if (g_proto == PROTO_REDODO) protoStr = "REDODO";
         doc["proto"] = protoStr;
         doc["device_name"] = getActiveDeviceName();
         doc["cell_count"] = g_bms.cell_count;
@@ -3131,6 +3299,9 @@ void setupWebServerRoutes() {
         } else if (p == "jk" && g_proto != PROTO_JK) {
             delay(200);
             setEmulatorMode(PROTO_JK);
+        } else if (p == "redodo" && g_proto != PROTO_REDODO) {
+            delay(200);
+            setEmulatorMode(PROTO_REDODO);
         } else if (p == "jbd" && g_proto != PROTO_JBD) {
             delay(200);
             setEmulatorMode(PROTO_JBD);
@@ -3446,7 +3617,7 @@ void setup() {
     initMacConfig();
 
     // Flash LED 3 times on boot to indicate selected mode
-    // JBD: 3 Red flashes | Daly: 3 Magenta flashes | Ant: 3 Blue flashes | JK: 3 Orange flashes
+    // JBD: 3 Red flashes | Daly: 3 Magenta flashes | Ant: 3 Blue flashes | JK: 3 Orange flashes | Redodo: 3 Yellow flashes
     for (int i = 0; i < 3; ++i) {
         if (g_proto == PROTO_DALY) {
             setRgbLed(60, 0, 60);       // Magenta
@@ -3454,6 +3625,8 @@ void setup() {
             setRgbLed(0, 0, 60);        // Blue
         } else if (g_proto == PROTO_JK) {
             setRgbLed(60, 30, 0);       // Orange
+        } else if (g_proto == PROTO_REDODO) {
+            setRgbLed(50, 50, 0);       // Yellow
         } else {
             setRgbLed(60, 0, 0);        // Red
         }
@@ -3472,6 +3645,9 @@ void setup() {
     } else if (g_proto == PROTO_JK) {
         Serial.println("     ESP32-C6 JKBMS BLE Emulator (JK02 Protocol)      ");
         Serial.printf("Device Name: %s\n", getJkDeviceName().c_str());
+    } else if (g_proto == PROTO_REDODO) {
+        Serial.println("   ESP32-C6 Redodo / LiTime Monolithic BLE Emulator    ");
+        Serial.printf("Device Name: %s\n", getRedodoDeviceName().c_str());
     } else {
         Serial.println("   ESP32-C6 JBD BMS BLE Emulator (DB24SF01 / 8S200A)   ");
         Serial.printf("Device Name: %s\n", BLE_DEVICE_NAME);
@@ -3808,6 +3984,56 @@ void setup() {
         updateStatusLed();
         Serial.printf("[BLE] Advertising started successfully as '%s'.\n", jkName.c_str());
         Serial.println("[BLE] Ready for connection from JKBMS App, ESPHome, or ESP32 Universal Monitor...");
+    } else if (g_proto == PROTO_REDODO) {
+        // Initialize NimBLE Device for Redodo / LiTime
+        String redodoName = getRedodoDeviceName();
+        NimBLEDevice::init(redodoName.c_str());
+        NimBLEDevice::setMTU(512);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+        NimBLEDevice::setSecurityAuth(false, false, false);
+
+        Serial.printf("[BLE] Hardware BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
+
+        pServer = NimBLEDevice::createServer();
+        pServer->setCallbacks(new ServerCallbacks());
+
+        // Primary Redodo Service 0xFFE0
+        NimBLEService* pRedodoService = pServer->createService(NimBLEUUID((uint16_t)0xFFE0));
+        pRedodoNotifyChar = pRedodoService->createCharacteristic(
+            NimBLEUUID((uint16_t)0xFFE1),
+            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE
+        );
+        pRedodoNotifyChar->setCallbacks(new RedodoWriteCallbacks());
+
+        // Device Information Service 0x180A
+        NimBLEService* pDevInfo = pServer->createService(NimBLEUUID((uint16_t)0x180A));
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A24), NIMBLE_PROPERTY::READ)->setValue(redodoName.c_str());
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A29), NIMBLE_PROPERTY::READ)->setValue("Redodo");
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A26), NIMBLE_PROPERTY::READ)->setValue("V1.0.4");
+        pDevInfo->createCharacteristic(NimBLEUUID((uint16_t)0x2A27), NIMBLE_PROPERTY::READ)->setValue("Redodo-BMS");
+
+        pServer->start();
+
+        // Advertising for Redodo
+        NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+        NimBLEAdvertisementData advData;
+        advData.setFlags(0x06);
+        advData.setName(redodoName.c_str());
+        advData.setCompleteServices(NimBLEUUID((uint16_t)0xFFE0));
+
+        NimBLEAdvertisementData scanData;
+        scanData.setManufacturerData(std::string((char*)activeMac, 6));
+
+        pAdvertising->setAdvertisementData(advData);
+        pAdvertising->setScanResponseData(scanData);
+        pAdvertising->setMinInterval(32);
+        pAdvertising->setMaxInterval(64);
+        pAdvertising->start();
+
+        updateStatusLed();
+        Serial.printf("[BLE] Advertising started successfully as '%s'.\n", redodoName.c_str());
+        Serial.println("[BLE] Ready for connection from Redodo Monitor (HTML/Web Bluetooth), LiTime App, or ESP32 Universal Monitor...");
     } else {
         // Initialize NimBLE Device for JBD
         NimBLEDevice::init(BLE_DEVICE_NAME);
@@ -4085,6 +4311,13 @@ void loop() {
         sendJkCellInfo();
     }
 
+    // In Redodo mode, periodically push 105-byte telemetry frame (every 1500ms)
+    static unsigned long s_lastRedodoPush = 0;
+    if (g_proto == PROTO_REDODO && g_deviceConnected && (now - s_lastRedodoPush >= 1500)) {
+        s_lastRedodoPush = now;
+        sendRedodoTelemetry();
+    }
+
     // Periodic telemetry log (every 2000ms)
     if (now - g_lastLogTime >= 2000) {
         g_lastLogTime = now;
@@ -4125,6 +4358,8 @@ void loop() {
                 setEmulatorMode(PROTO_ANT);
             } else if (cmd == "k" || cmd == "jk" || cmd == "jkbms") {
                 setEmulatorMode(PROTO_JK);
+            } else if (cmd == "r" || cmd == "redodo" || cmd == "litime") {
+                setEmulatorMode(PROTO_REDODO);
             } else if (cmd == "w" || cmd == "wifi") {
                 Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
                               g_isApMode ? "AP (BMS-Emulator-Setup)" : "STA",
@@ -4172,6 +4407,8 @@ void loop() {
                 } else if (g_proto == PROTO_JK) {
                     sendJkCellInfo();
                     sendJkSettings();
+                } else if (g_proto == PROTO_REDODO) {
+                    sendRedodoTelemetry();
                 }
             } else if (cmd == "1" || cmd == "dis" || cmd == "discharge") {
                 g_bms.mode = MODE_DISCHARGE;
@@ -4215,6 +4452,7 @@ void loop() {
                 Serial.println("  'y' or 'daly'        : Switch to DALY BMS emulator");
                 Serial.println("  'a' or 'ant'         : Switch to ANT BMS emulator");
                 Serial.println("  'k' or 'jk'          : Switch to JKBMS (JK02) emulator");
+                Serial.println("  'r' or 'redodo'      : Switch to Redodo / LiTime BMS emulator");
                 Serial.println("  'm' or 'toggle'      : Cycle through BMS emulator modes");
                 Serial.println("  '4s' / '8s' / '16s'  : Set battery series count (or 'cells <N>', 3..32)");
                 Serial.println("  'w' or 'wifi'        : Show Wi-Fi status, IP, SSID & signal");
