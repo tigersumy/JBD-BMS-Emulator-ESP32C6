@@ -298,13 +298,13 @@ String getRedodoDeviceName() {
         }
     } else {
         if (g_bms.cell_count == 4) {
-            snprintf(buf, sizeof(buf), "R-12100B");
+            snprintf(buf, sizeof(buf), "R-12100BNN160-A00643");
         } else if (g_bms.cell_count == 8) {
-            snprintf(buf, sizeof(buf), "R-24100B");
+            snprintf(buf, sizeof(buf), "R-24100BNN160-A00643");
         } else if (g_bms.cell_count == 16) {
-            snprintf(buf, sizeof(buf), "R-48100B");
+            snprintf(buf, sizeof(buf), "R-48100BNN160-A00643");
         } else {
-            snprintf(buf, sizeof(buf), "R-BMS-%02uS", (unsigned int)g_bms.cell_count);
+            snprintf(buf, sizeof(buf), "R-BMS-%02uS-A00643", (unsigned int)g_bms.cell_count);
         }
     }
     return String(buf);
@@ -324,13 +324,13 @@ String getRedodoSerialNumber() {
         }
     } else {
         if (g_bms.cell_count == 4) {
-            snprintf(buf, sizeof(buf), "RD120712100BXX001Z");
+            snprintf(buf, sizeof(buf), "R-12100BNN160-A00643");
         } else if (g_bms.cell_count == 8) {
-            snprintf(buf, sizeof(buf), "RD240724100BXX001Z");
+            snprintf(buf, sizeof(buf), "R-24100BNN160-A00643");
         } else if (g_bms.cell_count == 16) {
-            snprintf(buf, sizeof(buf), "RD480748100BXX001Z");
+            snprintf(buf, sizeof(buf), "R-48100BNN160-A00643");
         } else {
-            snprintf(buf, sizeof(buf), "RD%02u07BMS%02uSXX001Z", (unsigned int)(g_bms.cell_count * 3.2f), (unsigned int)g_bms.cell_count);
+            snprintf(buf, sizeof(buf), "R-BMS-%02uS-A00643", (unsigned int)g_bms.cell_count);
         }
     }
     return String(buf);
