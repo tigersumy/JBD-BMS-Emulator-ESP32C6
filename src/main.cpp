@@ -428,6 +428,27 @@ void checkBootButtonAtPowerOn() {
     }
 }
 
+uint16_t getTargetCellBaseMv(BatteryChemistry chem, uint8_t soc, uint8_t mode) {
+    if (soc > 100) soc = 100;
+    if (chem == CHEM_LIION) {
+        // Li-Ion NMC OCV curve: 3200 mV (0%) -> 3680 mV (50%) -> 4160 mV (100%)
+        int32_t ocv = 3200 + ((int32_t)soc * 960) / 100;
+        if (mode == MODE_DISCHARGE) ocv -= 45; // Ohmic sag under 17A discharge
+        else if (mode == MODE_CHARGE) ocv += 40; // Charge rise under 25A charge
+        if (ocv < 3050) ocv = 3050;
+        if (ocv > 4200) ocv = 4200;
+        return (uint16_t)ocv;
+    } else {
+        // LiFePO4 OCV curve: 3100 mV (0%) -> 3295 mV (50%) -> 3380 mV (100%)
+        int32_t ocv = (soc < 10) ? (3100 + soc * 16) : (3260 + ((int32_t)(soc - 10) * 120) / 90);
+        if (mode == MODE_DISCHARGE) ocv -= 35;
+        else if (mode == MODE_CHARGE) ocv += 75;
+        if (ocv < 2850) ocv = 2850;
+        if (ocv > 3550) ocv = 3550;
+        return (uint16_t)ocv;
+    }
+}
+
 void initDoubleResetAndMode() {
     esp_reset_reason_t reason = esp_reset_reason();
 
@@ -481,8 +502,8 @@ void initDoubleResetAndMode() {
     g_redodoProfile = (RedodoProfile)savedRdSub;
     updateJbdNames();
 
-    // Initialize cell voltages matching loaded chemistry
-    uint16_t baseInitMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
+    // Initialize cell voltages matching loaded chemistry and SOC
+    uint16_t baseInitMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, g_bms.mode);
     uint32_t totalInitMv = 0;
     for (int i = 0; i < 32; ++i) {
         int spread = (int)(i % 5) - 2;
@@ -497,9 +518,7 @@ void setBatteryChemistry(BatteryChemistry chem) {
     g_chemistry = chem;
     s_prefs.putUChar("chem", (uint8_t)g_chemistry);
 
-    uint16_t baseMv = (g_chemistry == CHEM_LIION) ? 3750 : 3320;
-    if (g_bms.mode == MODE_DISCHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
-    else if (g_bms.mode == MODE_CHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 4120 : 3450;
+    uint16_t baseMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, g_bms.mode);
 
     uint32_t totalMv = 0;
     for (int i = 0; i < 32; ++i) {
@@ -524,16 +543,12 @@ void setCellCount(uint8_t cnt) {
     }
     updateJbdNames();
 
-    uint16_t baseMv = (g_chemistry == CHEM_LIION) ? 3750 : 3320;
-    if (g_bms.mode == MODE_DISCHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
-    else if (g_bms.mode == MODE_CHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 4120 : 3450;
+    uint16_t baseMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, g_bms.mode);
 
     uint32_t totalMv = 0;
     for (int i = 0; i < cnt && i < 32; ++i) {
-        if (g_bms.cell_mv[i] == 0 || (g_chemistry == CHEM_LIION && g_bms.cell_mv[i] < 3400) || (g_chemistry == CHEM_LIFEPO4 && g_bms.cell_mv[i] > 3700)) {
-            int spread = (int)(i % 5) - 2;
-            g_bms.cell_mv[i] = baseMv + spread;
-        }
+        int spread = (int)(i % 5) - 2;
+        g_bms.cell_mv[i] = baseMv + spread;
         totalMv += g_bms.cell_mv[i];
     }
     g_bms.pack_voltage_10mv = totalMv / 10;
@@ -3128,14 +3143,18 @@ void buildJkCellInfoFrame(uint8_t* frame) {
     frame[4] = 0x02; // Frame Type: Cell Info
     frame[5] = s_cellCounter++;
 
-    // Cell voltages 1..24 (bytes 6 + i*2: Little-Endian uint16 in mV)
+    // Automatically select JK02_24S (offset=0, 24 slots) vs JK02_32S (offset=32, 32 slots)
+    const uint8_t maxSlots = (g_bms.cell_count > 24) ? 32 : 24;
+    const size_t offset    = (g_bms.cell_count > 24) ? 32 : 0;
+    const size_t maskOff   = (g_bms.cell_count > 24) ? 70 : 54;
+
     uint32_t totalMv = 0;
     uint16_t minMv = 0xFFFF;
     uint16_t maxMv = 0;
     uint8_t minCellIdx = 0;
     uint8_t maxCellIdx = 0;
 
-    for (uint8_t i = 0; i < 24; ++i) {
+    for (uint8_t i = 0; i < maxSlots; ++i) {
         uint16_t mv = (i < g_bms.cell_count) ? g_bms.cell_mv[i] : 0;
         frame[6 + i * 2]     = mv & 0xFF;
         frame[6 + i * 2 + 1] = (mv >> 8) & 0xFF;
@@ -3147,111 +3166,109 @@ void buildJkCellInfoFrame(uint8_t* frame) {
     }
     if (minMv == 0xFFFF) minMv = 0;
 
-    // Enabled cells bitmask (bytes 54..57: uint32 LE)
-    // 0x000000FF for 8 cells enabled! Enables cell display in official JKBMS app.
+    // Enabled cells bitmask (uint32 LE)
     uint32_t cellMask = 0;
-    for (uint8_t i = 0; i < g_bms.cell_count && i < 24; ++i) {
+    for (uint8_t i = 0; i < g_bms.cell_count && i < maxSlots; ++i) {
         cellMask |= (1UL << i);
     }
-    memcpy(&frame[54], &cellMask, 4);
+    memcpy(&frame[maskOff], &cellMask, 4);
 
-    // Average cell voltage (bytes 58..59: uint16 LE in mV)
+    // Average cell voltage (uint16 LE in mV)
     uint16_t avgMv = (g_bms.cell_count > 0) ? (uint16_t)(totalMv / g_bms.cell_count) : 0;
-    frame[58] = avgMv & 0xFF;
-    frame[59] = (avgMv >> 8) & 0xFF;
+    frame[maskOff + 4] = avgMv & 0xFF;
+    frame[maskOff + 5] = (avgMv >> 8) & 0xFF;
 
-    // Delta cell voltage (bytes 60..61: uint16 LE in mV)
+    // Delta cell voltage (uint16 LE in mV)
     uint16_t deltaMv = (maxMv >= minMv) ? (maxMv - minMv) : 0;
-    frame[60] = deltaMv & 0xFF;
-    frame[61] = (deltaMv >> 8) & 0xFF;
+    frame[maskOff + 6] = deltaMv & 0xFF;
+    frame[maskOff + 7] = (deltaMv >> 8) & 0xFF;
 
-    // Max voltage cell index (byte 62: 0-based index)
-    frame[62] = maxCellIdx;
+    // Max/Min voltage cell index (0-based index)
+    frame[maskOff + 8] = maxCellIdx;
+    frame[maskOff + 9] = minCellIdx;
 
-    // Min voltage cell index (byte 63: 0-based index)
-    frame[63] = minCellIdx;
-
-    // Cell wire resistances 1..24 (bytes 64 + i*2: Little-Endian uint16 in mOhm)
-    for (uint8_t i = 0; i < 24; ++i) {
+    // Cell wire resistances (Little-Endian uint16 in mOhm)
+    for (uint8_t i = 0; i < maxSlots; ++i) {
         uint16_t res = (i < g_bms.cell_count) ? 100 : 0; // 100 mOhm = 0.100 Ohm
-        frame[64 + i * 2]     = res & 0xFF;
-        frame[64 + i * 2 + 1] = (res >> 8) & 0xFF;
+        frame[maskOff + 10 + i * 2]     = res & 0xFF;
+        frame[maskOff + 10 + i * 2 + 1] = (res >> 8) & 0xFF;
     }
 
-    // Bytes 114..117: Wire warning bitmask (0)
+    // Total Battery Voltage (bytes 118+offset: uint32 LE in mV)
+    memcpy(&frame[118 + offset], &totalMv, 4);
 
-    // Total Battery Voltage (bytes 118..121: uint32 LE in mV)
-    memcpy(&frame[118], &totalMv, 4);
-
-    // Battery power in mW (bytes 122..125: uint32 LE)
+    // Battery power in mW (bytes 122+offset: uint32 LE)
     int32_t curMa = (int32_t)g_bms.current_10ma * 10;
     uint32_t powerMw = (uint32_t)(abs(curMa) * (totalMv / 1000.0f));
-    memcpy(&frame[122], &powerMw, 4);
+    memcpy(&frame[122 + offset], &powerMw, 4);
 
-    // Charge/Discharge current (bytes 126..129: signed int32 LE in mA, + = Charge, - = Discharge)
-    memcpy(&frame[126], &curMa, 4);
+    // Charge/Discharge current (bytes 126+offset: signed int32 LE in mA, + = Charge, - = Discharge)
+    memcpy(&frame[126 + offset], &curMa, 4);
 
-    // Temperature sensor 1 (bytes 130..131: int16 LE in 0.1 °C)
+    // Temperature sensor 1 (bytes 130+offset: int16 LE in 0.1 °C)
     int16_t t1 = (int16_t)(g_bms.ntc1_temp_01k - 2731);
-    frame[130] = t1 & 0xFF;
-    frame[131] = (t1 >> 8) & 0xFF;
+    frame[130 + offset] = t1 & 0xFF;
+    frame[131 + offset] = (t1 >> 8) & 0xFF;
 
-    // Temperature sensor 2 (bytes 132..133: int16 LE in 0.1 °C)
+    // Temperature sensor 2 (bytes 132+offset: int16 LE in 0.1 °C)
     int16_t t2 = (int16_t)(g_bms.ntc2_temp_01k - 2731);
-    frame[132] = t2 & 0xFF;
-    frame[133] = (t2 >> 8) & 0xFF;
+    frame[132 + offset] = t2 & 0xFF;
+    frame[133 + offset] = (t2 >> 8) & 0xFF;
 
-    // MOS Temperature (bytes 134..135: int16 LE in 0.1 °C)
+    // MOS Temperature (bytes 134+offset in 24S, bytes 112+offset in 32S: int16 LE in 0.1 °C)
     int16_t tMos = (int16_t)(g_bms.ntc3_temp_01k - 2731);
-    frame[134] = tMos & 0xFF;
-    frame[135] = (tMos >> 8) & 0xFF;
+    if (offset == 32) {
+        frame[112 + offset] = tMos & 0xFF;
+        frame[113 + offset] = (tMos >> 8) & 0xFF;
+    } else {
+        frame[134 + offset] = tMos & 0xFF;
+        frame[135 + offset] = (tMos >> 8) & 0xFF;
+    }
 
-    // Errors bitmask (bytes 136..137: uint16 LE, 0)
-
-    // Balancing current (bytes 138..139: int16 LE in mA, 0)
+    // Balancing current (bytes 138+offset: int16 LE in mA)
     int16_t balCurMa = (g_bms.balance_low > 0) ? 1000 : 0;
-    frame[138] = balCurMa & 0xFF;
-    frame[139] = (balCurMa >> 8) & 0xFF;
+    frame[138 + offset] = balCurMa & 0xFF;
+    frame[139 + offset] = (balCurMa >> 8) & 0xFF;
 
-    // Balancing action (byte 140: 0 = Off, 1 = Charging balancer, 2 = Discharging balancer)
-    frame[140] = (g_bms.balance_low > 0) ? 1 : 0;
+    // Balancing action (byte 140+offset: 0 = Off, 1 = Charging balancer, 2 = Discharging balancer)
+    frame[140 + offset] = (g_bms.balance_low > 0) ? 1 : 0;
 
-    // State of charge (byte 141: uint8 in 1.0 %)
-    frame[141] = g_bms.soc_percent;
+    // State of charge (byte 141+offset: uint8 in 1.0 %)
+    frame[141 + offset] = g_bms.soc_percent;
 
-    // Capacity remaining in mAh (bytes 142..145: uint32 LE)
+    // Capacity remaining in mAh (bytes 142+offset: uint32 LE)
     uint32_t remMah = (uint32_t)g_bms.remain_cap_10mah * 10;
-    memcpy(&frame[142], &remMah, 4);
+    memcpy(&frame[142 + offset], &remMah, 4);
 
-    // Capacity nominal in mAh (bytes 146..149: uint32 LE)
+    // Capacity nominal in mAh (bytes 146+offset: uint32 LE)
     uint32_t nomMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
-    memcpy(&frame[146], &nomMah, 4);
+    memcpy(&frame[146 + offset], &nomMah, 4);
 
-    // Cycle count (bytes 150..153: uint32 LE)
+    // Cycle count (bytes 150+offset: uint32 LE)
     uint32_t cycles = g_bms.cycle_count;
-    memcpy(&frame[150], &cycles, 4);
+    memcpy(&frame[150 + offset], &cycles, 4);
 
-    // Cycle capacity in mAh (bytes 154..157: uint32 LE)
+    // Cycle capacity in mAh (bytes 154+offset: uint32 LE)
     uint32_t cycleMah = (uint32_t)g_bms.cycle_cap_10mah * 10;
-    memcpy(&frame[154], &cycleMah, 4);
+    memcpy(&frame[154 + offset], &cycleMah, 4);
 
     // SOH (%)
-    frame[158] = 100;
+    frame[158 + offset] = 100;
 
-    // Total runtime in seconds (bytes 162..165: uint32 LE)
+    // Total runtime in seconds (bytes 162+offset: uint32 LE)
     uint32_t uptime = millis() / 1000;
-    memcpy(&frame[162], &uptime, 4);
+    memcpy(&frame[162 + offset], &uptime, 4);
 
     // Switches
-    frame[166] = (g_bms.fet_status & 0x01) ? 1 : 0; // Charge MOS
-    frame[167] = (g_bms.fet_status & 0x02) ? 1 : 0; // Discharge MOS
-    frame[168] = 0; // Precharge
-    frame[169] = 1; // Balancer working
+    frame[166 + offset] = (g_bms.fet_status & 0x01) ? 1 : 0; // Charge MOS
+    frame[167 + offset] = (g_bms.fet_status & 0x02) ? 1 : 0; // Discharge MOS
+    frame[168 + offset] = 0; // Precharge
+    frame[169 + offset] = 1; // Balancer working
 
-    // Battery pack voltage in 0.01V (bytes 202..203: uint16 LE)
+    // Battery pack voltage in 0.01V (bytes 202+offset: uint16 LE)
     uint16_t pack001v = (uint16_t)(totalMv / 10);
-    frame[202] = pack001v & 0xFF;
-    frame[203] = (pack001v >> 8) & 0xFF;
+    frame[202 + offset] = pack001v & 0xFF;
+    frame[203 + offset] = (pack001v >> 8) & 0xFF;
 
     // Checksum (byte 299: sum of bytes 0..298)
     uint8_t crc = 0;
@@ -4657,11 +4674,15 @@ void loop() {
             }
 
             // Cell voltages sag under 17A load with realistic cell delta & live breathing (+/- 4..7 mV)
+            if (g_bms.nominal_cap_10mah > 0) {
+                g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
+            }
+
             int d1 = (int)(wave1 * 4.0f);
             int d2 = (int)(wave2 * 3.5f);
             int d3 = (int)(sinf(t * 0.5f) * 3.0f);
 
-            uint16_t baseDisMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
+            uint16_t baseDisMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, MODE_DISCHARGE);
             uint32_t totalMv = 0;
             for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
                 int pattern = (i % 4 == 0) ? d1 : ((i % 4 == 1) ? -d2 : ((i % 4 == 2) ? d2 : -d1));
@@ -4686,13 +4707,16 @@ void loop() {
                 if (g_bms.remain_cap_10mah < g_bms.nominal_cap_10mah) g_bms.remain_cap_10mah++;
                 g_bms.fractional_mah -= 10.0f;
             }
+            if (g_bms.nominal_cap_10mah > 0) {
+                g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
+            }
 
-            // Cell voltages rise during charging (~3.45V LFP, ~4.12V Li-Ion) with dynamic ripples (+/- 4..6 mV)
+            // Cell voltages rise during charging with dynamic ripples (+/- 4..6 mV)
             int d1 = (int)(wave1 * 4.0f);
             int d2 = (int)(wave2 * 3.5f);
             int d3 = (int)(sinf(t * 0.5f) * 3.0f);
 
-            uint16_t baseChgMv = (g_chemistry == CHEM_LIION) ? 4120 : 3450;
+            uint16_t baseChgMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, MODE_CHARGE);
             uint32_t totalMv = 0;
             for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
                 int pattern = (i % 4 == 0) ? d1 : ((i % 4 == 1) ? -d2 : ((i % 4 == 2) ? d2 : -d1));
@@ -4707,10 +4731,13 @@ void loop() {
 
             g_bms.pack_voltage_10mv = totalMv / 10;
         } else {
-            // Idle Mode (0.00 A) - realistic resting cells with micro-drift (~3.32V LFP, ~3.75V Li-Ion)
+            // Idle Mode (0.00 A) - realistic resting cells with micro-drift
             g_bms.current_10ma = 0;
+            if (g_bms.nominal_cap_10mah > 0) {
+                g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
+            }
             int n = (int)(wave1 * 2.0f);
-            uint16_t baseIdleMv = (g_chemistry == CHEM_LIION) ? 3750 : 3320;
+            uint16_t baseIdleMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, MODE_IDLE);
             uint32_t totalMv = 0;
             for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
                 int pattern = (i % 2 == 0) ? n : -n;
@@ -4722,11 +4749,6 @@ void loop() {
             g_bms.ntc1_temp_01k = 2981; // 25.0 °C
             g_bms.ntc2_temp_01k = 2976; // 24.5 °C
             g_bms.ntc3_temp_01k = 2955; // 22.4 °C (MOSFET ambient resting)
-        }
-
-        // Calculate SOC (%)
-        if (g_bms.nominal_cap_10mah > 0) {
-            g_bms.soc_percent = (uint8_t)(((uint32_t)g_bms.remain_cap_10mah * 100) / g_bms.nominal_cap_10mah);
         }
     }
 
