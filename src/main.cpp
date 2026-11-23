@@ -45,6 +45,31 @@ enum EmulatorProtocol {
     PROTO_REDODO = 4
 };
 
+enum BatteryChemistry {
+    CHEM_LIFEPO4 = 0,
+    CHEM_LIION = 1
+};
+
+BatteryChemistry g_chemistry = CHEM_LIFEPO4;
+
+const char* getChemistryName(BatteryChemistry chem) {
+    switch (chem) {
+        case CHEM_LIION: return "Li-Ion (NMC)";
+        default: return "LiFePO4";
+    }
+}
+
+const char* getChemistryShort(BatteryChemistry chem) {
+    switch (chem) {
+        case CHEM_LIION: return "Li-Ion";
+        default: return "LFP";
+    }
+}
+
+float getNominalCellVoltage(BatteryChemistry chem) {
+    return (chem == CHEM_LIION) ? 3.7f : 3.2f;
+}
+
 // PIN Code for JBD Authentication (System passkey & App-layer PIN)
 #define JBD_PIN_CODE "123456"
 
@@ -440,6 +465,10 @@ void initDoubleResetAndMode() {
     if (savedCells >= 3 && savedCells <= 32) {
         g_bms.cell_count = savedCells;
     }
+    uint8_t savedChem = s_prefs.getUChar("chem", CHEM_LIFEPO4);
+    if (savedChem > CHEM_LIION) savedChem = CHEM_LIFEPO4;
+    g_chemistry = (BatteryChemistry)savedChem;
+
     uint8_t savedJbdSub = s_prefs.getUChar("jbd_sub", JBD_PROFILE_STANDARD);
     if (savedJbdSub > JBD_PROFILE_OVERKILL) savedJbdSub = JBD_PROFILE_STANDARD;
     g_jbdProfile = (JbdProfile)savedJbdSub;
@@ -451,7 +480,38 @@ void initDoubleResetAndMode() {
     if (savedRdSub > REDODO_PROFILE_REDODO) savedRdSub = REDODO_PROFILE_LITIME;
     g_redodoProfile = (RedodoProfile)savedRdSub;
     updateJbdNames();
+
+    // Initialize cell voltages matching loaded chemistry
+    uint16_t baseInitMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
+    uint32_t totalInitMv = 0;
+    for (int i = 0; i < 32; ++i) {
+        int spread = (int)(i % 5) - 2;
+        g_bms.cell_mv[i] = baseInitMv + spread;
+        if (i < g_bms.cell_count) totalInitMv += g_bms.cell_mv[i];
+    }
+    g_bms.pack_voltage_10mv = totalInitMv / 10;
     g_bootTime = millis();
+}
+
+void setBatteryChemistry(BatteryChemistry chem) {
+    g_chemistry = chem;
+    s_prefs.putUChar("chem", (uint8_t)g_chemistry);
+
+    uint16_t baseMv = (g_chemistry == CHEM_LIION) ? 3750 : 3320;
+    if (g_bms.mode == MODE_DISCHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
+    else if (g_bms.mode == MODE_CHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 4120 : 3450;
+
+    uint32_t totalMv = 0;
+    for (int i = 0; i < 32; ++i) {
+        int spread = (int)(i % 5) - 2;
+        g_bms.cell_mv[i] = baseMv + spread;
+        if (i < g_bms.cell_count) {
+            totalMv += g_bms.cell_mv[i];
+        }
+    }
+    g_bms.pack_voltage_10mv = totalMv / 10;
+    Serial.printf("\n[SYSTEM] >>> Battery Chemistry set to %s! Pack Voltage: %.2fV <<<\n\n",
+                  getChemistryName(g_chemistry), g_bms.pack_voltage_10mv / 100.0f);
 }
 
 void setCellCount(uint8_t cnt) {
@@ -463,13 +523,22 @@ void setCellCount(uint8_t cnt) {
         g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
     }
     updateJbdNames();
+
+    uint16_t baseMv = (g_chemistry == CHEM_LIION) ? 3750 : 3320;
+    if (g_bms.mode == MODE_DISCHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
+    else if (g_bms.mode == MODE_CHARGE) baseMv = (g_chemistry == CHEM_LIION) ? 4120 : 3450;
+
     uint32_t totalMv = 0;
     for (int i = 0; i < cnt && i < 32; ++i) {
+        if (g_bms.cell_mv[i] == 0 || (g_chemistry == CHEM_LIION && g_bms.cell_mv[i] < 3400) || (g_chemistry == CHEM_LIFEPO4 && g_bms.cell_mv[i] > 3700)) {
+            int spread = (int)(i % 5) - 2;
+            g_bms.cell_mv[i] = baseMv + spread;
+        }
         totalMv += g_bms.cell_mv[i];
     }
     g_bms.pack_voltage_10mv = totalMv / 10;
-    Serial.printf("\n[SYSTEM] >>> Cell count updated to %uS! Pack Voltage: %.2fV <<<\n\n",
-                  cnt, g_bms.pack_voltage_10mv / 100.0f);
+    Serial.printf("\n[SYSTEM] >>> Cell count updated to %uS (%s)! Pack Voltage: %.2fV <<<\n\n",
+                  cnt, getChemistryName(g_chemistry), g_bms.pack_voltage_10mv / 100.0f);
 }
 
 void setEmulatorMode(EmulatorProtocol p);
@@ -1241,12 +1310,12 @@ void sendParameterRegister(uint8_t reg) {
     switch (reg) {
         case 0x10: val = g_bms.nominal_cap_10mah; break;  // Nominal / Design Capacity (10mAh units -> e.g. 30000 = 300.00Ah)
         case 0x11: val = g_bms.cycle_cap_10mah;   break;  // Cycle Capacity (10mAh units -> e.g. 24000 = 240.00Ah)
-        case 0x12: val = 2500; break;  // Cell Undervoltage trigger (mV)
-        case 0x13: val = 2800; break;  // Cell Undervoltage release (mV)
-        case 0x14: val = 2920; break;  // Pack Overvoltage trigger (10mV)
-        case 0x15: val = 2840; break;  // Pack Overvoltage release (10mV)
-        case 0x16: val = 2000; break;  // Pack Undervoltage trigger (10mV)
-        case 0x17: val = 2240; break;  // Pack Undervoltage release (10mV)
+        case 0x12: val = (g_chemistry == CHEM_LIION) ? 2900 : 2500; break;  // Cell Undervoltage trigger (mV)
+        case 0x13: val = (g_chemistry == CHEM_LIION) ? 3100 : 2800; break;  // Cell Undervoltage release (mV)
+        case 0x14: val = (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 420 : 365)); break;  // Pack Overvoltage trigger (10mV)
+        case 0x15: val = (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 415 : 355)); break;  // Pack Overvoltage release (10mV)
+        case 0x16: val = (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 290 : 250)); break;  // Pack Undervoltage trigger (10mV)
+        case 0x17: val = (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 310 : 280)); break;  // Pack Undervoltage release (10mV)
         case 0x18: val = 3281; break;  // Charge Overtemp trigger (55.0°C)
         case 0x19: val = 3181; break;  // Charge Overtemp release (45.0°C)
         case 0x1A: val = 2731; break;  // Charge Undertemp trigger (0.0°C)
@@ -1256,16 +1325,16 @@ void sendParameterRegister(uint8_t reg) {
         case 0x1E: val = 2531; break;  // Discharge Undertemp trigger (-20.0°C)
         case 0x1F: val = 2631; break;  // Discharge Undertemp release (-10.0°C)
         case 0x20: val = 10000; break; // Charge Overcurrent (100.0A)
-        case 0x21: val = 20000; break; // Discharge Overcurrent (200.0A for 8S200A)
-        case 0x22: val = 3350; break;  // Balance Start Voltage (mV)
+        case 0x21: val = 20000; break; // Discharge Overcurrent (200.0A)
+        case 0x22: val = (g_chemistry == CHEM_LIION) ? 4100 : 3350; break;  // Balance Start Voltage (mV)
         case 0x23: val = 15; break;    // Balance Delta Voltage (mV)
-        case 0x24: val = 3650; break;  // Cell Overvoltage Protection (3650mV)
-        case 0x25: val = 3500; break;  // Cell Overvoltage Release (3500mV)
-        case 0x26: val = 2500; break;  // Cell Undervoltage Protection (2500mV)
-        case 0x27: val = 2800; break;  // Cell Undervoltage Release (2800mV)
+        case 0x24: val = (g_chemistry == CHEM_LIION) ? 4250 : 3650; break;  // Cell Overvoltage Protection (mV)
+        case 0x25: val = (g_chemistry == CHEM_LIION) ? 4150 : 3500; break;  // Cell Overvoltage Release (mV)
+        case 0x26: val = (g_chemistry == CHEM_LIION) ? 2900 : 2500; break;  // Cell Undervoltage Protection (mV)
+        case 0x27: val = (g_chemistry == CHEM_LIION) ? 3100 : 2800; break;  // Cell Undervoltage Release (mV)
         case 0x28: val = 5000; break;  // Charge Overcurrent (50.00A)
         case 0x29: val = 20000; break; // Discharge Overcurrent (200.00A)
-        case 0x2A: val = 3400; break;  // Balance Start Voltage (3400mV)
+        case 0x2A: val = (g_chemistry == CHEM_LIION) ? 4100 : 3400; break;  // Balance Start Voltage (mV)
         case 0x2B: val = 10; break;    // Balance Window (10mV)
         case 0x2C: val = 5; break;     // Shunt Resistor (0.5mOhm)
         case 0x2D: val = 0x001F; break;// Function Configuration Mask
@@ -1698,24 +1767,24 @@ uint16_t getDalyHoldingRegister(uint16_t reg) {
 
         // Settings Block (0x0080..0x00A8 / 41 registers)
         case 0x0080: return (uint16_t)(g_bms.nominal_cap_10mah / 10);        // Rated capacity (0.1Ah -> 2000 = 200.0Ah)
-        case 0x0081: return 3200;                                             // Cell ref voltage (3200 mV)
+        case 0x0081: return (g_chemistry == CHEM_LIION) ? 3700 : 3200;       // Cell ref voltage (3700 mV / 3200 mV)
         case 0x0082: return 1;                                                // Boards (1)
-        case 0x0083: return g_bms.cell_count;                                 // Cell count (8)
+        case 0x0083: return g_bms.cell_count;                                 // Cell count
         case 0x0084: return 0;                                                // Board 2 cells (0)
         case 0x0085: return 0;                                                // Board 3 cells (0)
         case 0x0086: return g_bms.ntc_count;                                  // Temp sensors board 1 (3)
         case 0x0087: return 0;
         case 0x0088: return 0;
-        case 0x0089: return 0;                                                // Battery type (0 = LiFePO4)
+        case 0x0089: return (g_chemistry == CHEM_LIION) ? 1 : 0;              // Battery type (0 = LiFePO4, 1 = Ternary Li-ion)
         case 0x008A: return 7200;                                             // Sleep wait time (7200s)
-        case 0x008B: return 3600;                                             // Warning cell overvoltage (3600mV)
-        case 0x008C: return 3650;                                             // Critical cell overvoltage (3650mV)
-        case 0x008D: return 2600;                                             // Warning cell undervoltage (2600mV)
-        case 0x008E: return 2500;                                             // Critical cell undervoltage (2500mV)
-        case 0x008F: return 288;                                              // Warning total overvoltage (28.8V)
-        case 0x0090: return 292;                                              // Critical total overvoltage (29.2V)
-        case 0x0091: return 216;                                              // Warning total undervoltage (21.6V)
-        case 0x0092: return 200;                                              // Critical total undervoltage (20.0V)
+        case 0x008B: return (g_chemistry == CHEM_LIION) ? 4200 : 3600;       // Warning cell overvoltage (mV)
+        case 0x008C: return (g_chemistry == CHEM_LIION) ? 4250 : 3650;       // Critical cell overvoltage (mV)
+        case 0x008D: return (g_chemistry == CHEM_LIION) ? 3000 : 2600;       // Warning cell undervoltage (mV)
+        case 0x008E: return (g_chemistry == CHEM_LIION) ? 2900 : 2500;       // Critical cell undervoltage (mV)
+        case 0x008F: return (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 42.0f : 36.0f)); // Warning total overvoltage (0.1V)
+        case 0x0090: return (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 42.5f : 36.5f)); // Critical total overvoltage (0.1V)
+        case 0x0091: return (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 30.0f : 27.0f)); // Warning total undervoltage (0.1V)
+        case 0x0092: return (uint16_t)(g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 29.0f : 25.0f)); // Critical total undervoltage (0.1V)
         case 0x0093: return 31000;                                            // Warning charge current (+100A, offset 30000)
         case 0x0094: return 31200;                                            // Critical charge current (+120A, offset 30000)
         case 0x0095: return 28000;                                            // Warning discharge current (-200A, offset 30000)
@@ -1925,6 +1994,10 @@ void handleDalyModbusWrite(uint16_t addr, uint16_t val) {
             setCellCount((uint8_t)val);
             Serial.printf("[DALY D2] Cell count updated: %uS\n", val);
         }
+    } else if (addr == 0x0089) {
+        // Battery Type (0 = LiFePO4, 1 = Ternary Li-ion)
+        setBatteryChemistry((val == 1) ? CHEM_LIION : CHEM_LIFEPO4);
+        Serial.printf("[DALY D2] Battery type updated: %s\n", (g_chemistry == CHEM_LIION) ? "Li-Ion" : "LiFePO4");
     }
 
     // Standard Modbus 0x06 response: Echo back the 8-byte request frame with valid CRC
@@ -2975,32 +3048,32 @@ void buildJkSettingsFrame(uint8_t* frame) {
     frame[4] = 0x01; // Frame Type: Settings
     frame[5] = s_setCounter++;
 
-    // Smart sleep voltage (6..9, uint32 LE in mV) -> 2900 mV
-    uint32_t sleepMv = 2900;
+    // Smart sleep voltage (6..9, uint32 LE in mV)
+    uint32_t sleepMv = (g_chemistry == CHEM_LIION) ? 3200 : 2900;
     memcpy(&frame[6], &sleepMv, 4);
 
-    // Cell UVP (10..13, in mV) -> 2800 mV
-    uint32_t uvpMv = 2800;
+    // Cell UVP (10..13, in mV)
+    uint32_t uvpMv = (g_chemistry == CHEM_LIION) ? 3000 : 2800;
     memcpy(&frame[10], &uvpMv, 4);
 
-    // Cell UVPR (14..17, in mV) -> 3000 mV
-    uint32_t uvprMv = 3000;
+    // Cell UVPR (14..17, in mV)
+    uint32_t uvprMv = (g_chemistry == CHEM_LIION) ? 3200 : 3000;
     memcpy(&frame[14], &uvprMv, 4);
 
-    // Cell OVP (18..21, in mV) -> 3650 mV
-    uint32_t ovpMv = 3650;
+    // Cell OVP (18..21, in mV)
+    uint32_t ovpMv = (g_chemistry == CHEM_LIION) ? 4250 : 3650;
     memcpy(&frame[18], &ovpMv, 4);
 
-    // Cell OVPR (22..25, in mV) -> 3550 mV
-    uint32_t ovprMv = 3550;
+    // Cell OVPR (22..25, in mV)
+    uint32_t ovprMv = (g_chemistry == CHEM_LIION) ? 4150 : 3550;
     memcpy(&frame[22], &ovprMv, 4);
 
     // Balance trigger voltage (26..29, in mV) -> 10 mV
     uint32_t balTrigMv = 10;
     memcpy(&frame[26], &balTrigMv, 4);
 
-    // Power off voltage (46..49, in mV) -> 2700 mV
-    uint32_t pwrOffMv = 2700;
+    // Power off voltage (46..49, in mV)
+    uint32_t pwrOffMv = (g_chemistry == CHEM_LIION) ? 2800 : 2700;
     memcpy(&frame[46], &pwrOffMv, 4);
 
     // Max charge current (50..53, in mA) -> 50000 mA (50A)
@@ -3034,8 +3107,8 @@ void buildJkSettingsFrame(uint8_t* frame) {
     uint32_t nomMah = (uint32_t)g_bms.nominal_cap_10mah * 10;
     memcpy(&frame[130], &nomMah, 4);
 
-    // Start balance voltage (138..141, in mV) -> 3300 mV
-    uint32_t startBalMv = 3300;
+    // Start balance voltage (138..141, in mV)
+    uint32_t startBalMv = (g_chemistry == CHEM_LIION) ? 4050 : 3300;
     memcpy(&frame[138], &startBalMv, 4);
 
     // Checksum at byte 299
@@ -3531,6 +3604,13 @@ void setupWebServerRoutes() {
         doc["uptime_sec"] = millis() / 1000;
         doc["mac_active"] = formatMacAddress(g_activeBtMac);
         doc["mac_active_index"] = g_activeMacIndex;
+        doc["chemistry"] = (g_chemistry == CHEM_LIION) ? "liion" : "lifepo4";
+        doc["chem_name"] = getChemistryName(g_chemistry);
+        doc["chem_short"] = getChemistryShort(g_chemistry);
+        doc["cell_nominal_v"] = (g_chemistry == CHEM_LIION) ? 3.7f : 3.2f;
+        doc["pack_nominal_v"] = g_bms.cell_count * ((g_chemistry == CHEM_LIION) ? 3.7f : 3.2f);
+        doc["cell_min_mv"] = (g_chemistry == CHEM_LIION) ? 3000 : 2800;
+        doc["cell_max_mv"] = (g_chemistry == CHEM_LIION) ? 4200 : 3650;
 
         JsonArray macArr = doc["mac_profiles"].to<JsonArray>();
         for (uint8_t i = 0; i < g_storedMacCount; i++) {
@@ -3546,14 +3626,42 @@ void setupWebServerRoutes() {
         g_httpServer.send(200, "application/json", out);
     });
 
-    // API: Set Cell Count (4S, 8S, 16S, or 3S..32S)
+    // API: Set Cell Count (4S, 8S, 12S, 14S, 16S, or 3S..32S) & Optional Chemistry
     g_httpServer.on("/api/set-cells", HTTP_POST, []() {
         if (!g_httpServer.hasArg("plain")) { g_httpServer.send(400, "text/plain", "Missing body"); return; }
         JsonDocument doc;
         deserializeJson(doc, g_httpServer.arg("plain"));
-        int cnt = doc["cells"] | 8;
+        if (doc.containsKey("chem")) {
+            String ch = doc["chem"] | "";
+            ch.toLowerCase();
+            if (ch == "liion" || ch == "nmc" || ch == "li-ion" || ch == "1") {
+                setBatteryChemistry(CHEM_LIION);
+            } else if (ch.length() > 0) {
+                setBatteryChemistry(CHEM_LIFEPO4);
+            }
+        }
+        int cnt = doc["cells"] | g_bms.cell_count;
         if (cnt >= 3 && cnt <= 32) {
             setCellCount((uint8_t)cnt);
+        }
+        g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+    });
+
+    // API: Set Battery Chemistry (lifepo4 / liion)
+    g_httpServer.on("/api/set-chem", HTTP_POST, []() {
+        String ch = "";
+        if (g_httpServer.hasArg("plain")) {
+            JsonDocument doc;
+            deserializeJson(doc, g_httpServer.arg("plain"));
+            ch = doc["chem"] | "";
+        } else if (g_httpServer.hasArg("chem")) {
+            ch = g_httpServer.arg("chem");
+        }
+        ch.toLowerCase();
+        if (ch == "liion" || ch == "nmc" || ch == "li-ion" || ch == "1") {
+            setBatteryChemistry(CHEM_LIION);
+        } else {
+            setBatteryChemistry(CHEM_LIFEPO4);
         }
         g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
     });
@@ -4548,16 +4656,17 @@ void loop() {
                 g_bms.fractional_mah -= 10.0f;
             }
 
-            // Cell voltages sag under 17A load (~3.28V) with realistic cell delta & live breathing (+/- 4..7 mV)
+            // Cell voltages sag under 17A load with realistic cell delta & live breathing (+/- 4..7 mV)
             int d1 = (int)(wave1 * 4.0f);
             int d2 = (int)(wave2 * 3.5f);
             int d3 = (int)(sinf(t * 0.5f) * 3.0f);
 
+            uint16_t baseDisMv = (g_chemistry == CHEM_LIION) ? 3650 : 3280;
             uint32_t totalMv = 0;
             for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
                 int pattern = (i % 4 == 0) ? d1 : ((i % 4 == 1) ? -d2 : ((i % 4 == 2) ? d2 : -d1));
                 int spread = (int)(i % 5) - 2;
-                g_bms.cell_mv[i] = 3280 + pattern + spread;
+                g_bms.cell_mv[i] = baseDisMv + pattern + spread;
                 totalMv += g_bms.cell_mv[i];
             }
 
@@ -4578,16 +4687,17 @@ void loop() {
                 g_bms.fractional_mah -= 10.0f;
             }
 
-            // Cell voltages rise during charging (~3.45V) with dynamic ripples (+/- 4..6 mV)
+            // Cell voltages rise during charging (~3.45V LFP, ~4.12V Li-Ion) with dynamic ripples (+/- 4..6 mV)
             int d1 = (int)(wave1 * 4.0f);
             int d2 = (int)(wave2 * 3.5f);
             int d3 = (int)(sinf(t * 0.5f) * 3.0f);
 
+            uint16_t baseChgMv = (g_chemistry == CHEM_LIION) ? 4120 : 3450;
             uint32_t totalMv = 0;
             for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
                 int pattern = (i % 4 == 0) ? d1 : ((i % 4 == 1) ? -d2 : ((i % 4 == 2) ? d2 : -d1));
                 int spread = (int)(i % 5) - 2;
-                g_bms.cell_mv[i] = 3450 + pattern + spread;
+                g_bms.cell_mv[i] = baseChgMv + pattern + spread;
                 totalMv += g_bms.cell_mv[i];
             }
 
@@ -4597,14 +4707,15 @@ void loop() {
 
             g_bms.pack_voltage_10mv = totalMv / 10;
         } else {
-            // Idle Mode (0.00 A) - realistic resting LiFePO4 cells with micro-drift (~3.32V)
+            // Idle Mode (0.00 A) - realistic resting cells with micro-drift (~3.32V LFP, ~3.75V Li-Ion)
             g_bms.current_10ma = 0;
             int n = (int)(wave1 * 2.0f);
+            uint16_t baseIdleMv = (g_chemistry == CHEM_LIION) ? 3750 : 3320;
             uint32_t totalMv = 0;
             for (int i = 0; i < 32 && i < g_bms.cell_count; ++i) {
                 int pattern = (i % 2 == 0) ? n : -n;
                 int spread = (int)(i % 4) - 2;
-                g_bms.cell_mv[i] = 3320 + pattern + spread;
+                g_bms.cell_mv[i] = baseIdleMv + pattern + spread;
                 totalMv += g_bms.cell_mv[i];
             }
             g_bms.pack_voltage_10mv = totalMv / 10;
@@ -4663,9 +4774,10 @@ void loop() {
         const char* modeStr = (g_bms.current_10ma > 50) ? "CHARGING (+)" :
                               ((g_bms.current_10ma < -50) ? "DISCHARGING (-)" : "STANDBY (IDLE)");
 
-        Serial.printf("[STATUS] Proto: %s | Cells: %uS | WiFi: %s (%s) | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
+        Serial.printf("[STATUS] Proto: %s | Cells: %uS %s | WiFi: %s (%s) | BLE: %s | Mode: %s | Pack: %.2fV | Current: %+.2fA | Power: %.1fW | SOC: %u%% (%.2fAh)\n",
                       getProtoName(g_proto),
                       g_bms.cell_count,
+                      getChemistryShort(g_chemistry),
                       g_isApMode ? "AP" : "STA",
                       g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
                       g_deviceConnected ? "CONNECTED" : "ADVERTISING",
@@ -4739,12 +4851,34 @@ void loop() {
                 } else {
                     Serial.println(">>> Usage: wifi <SSID> <PASSWORD> <<<");
                 }
+            } else if (cmd.startsWith("chem ") || cmd.startsWith("chemistry ")) {
+                String arg = cmd.substring(cmd.indexOf(' ') + 1);
+                arg.trim();
+                arg.toLowerCase();
+                if (arg == "liion" || arg == "li-ion" || arg == "nmc" || arg == "1") {
+                    setBatteryChemistry(CHEM_LIION);
+                } else if (arg == "lifepo4" || arg == "lfp" || arg == "0") {
+                    setBatteryChemistry(CHEM_LIFEPO4);
+                } else {
+                    Serial.println(">>> Usage: chem <lifepo4|liion> <<<");
+                }
+            } else if (cmd == "chem" || cmd == "chemistry") {
+                Serial.printf(">>> Battery Chemistry: %s (%s, %.1fV nominal) <<<\n",
+                              getChemistryName(g_chemistry), getChemistryShort(g_chemistry),
+                              (g_chemistry == CHEM_LIION) ? 3.7f : 3.2f);
             } else if (cmd.startsWith("cells ") || cmd.startsWith("cell ") || cmd.startsWith("s ")) {
-                int cnt = cmd.substring(cmd.indexOf(' ') + 1).toInt();
+                String arg = cmd.substring(cmd.indexOf(' ') + 1);
+                arg.trim();
+                if (arg.indexOf("liion") >= 0 || arg.indexOf("li-ion") >= 0 || arg.indexOf("nmc") >= 0) {
+                    setBatteryChemistry(CHEM_LIION);
+                } else if (arg.indexOf("lfp") >= 0 || arg.indexOf("lifepo4") >= 0) {
+                    setBatteryChemistry(CHEM_LIFEPO4);
+                }
+                int cnt = arg.toInt();
                 if (cnt >= 3 && cnt <= 32) {
                     setCellCount((uint8_t)cnt);
                 } else {
-                    Serial.println(">>> Invalid cell count! Supported range: 3S..32S (e.g. '4s', '8s', '16s') <<<");
+                    Serial.println(">>> Invalid cell count! Supported range: 3S..32S (e.g. '12s', '14s', '8s') <<<");
                 }
             } else if (cmd.endsWith("s") && cmd.length() >= 2 && cmd.length() <= 3 && cmd.charAt(0) >= '0' && cmd.charAt(0) <= '9') {
                 int cnt = cmd.substring(0, cmd.length() - 1).toInt();

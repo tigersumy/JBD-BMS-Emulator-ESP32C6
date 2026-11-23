@@ -270,21 +270,34 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       </div>
 
       <div class="controls-grid">
-        <!-- Series Configuration -->
+        <!-- Series & Chemistry Configuration -->
         <div class="control-group">
           <div class="control-label">
-            <span data-i18n="cell_config">Конфігурація батареї (Кількість комірок)</span>
-            <span id="label-cells-curr">8S (24V)</span>
+            <span data-i18n="cell_config">Конфігурація батареї та хімії</span>
+            <span id="label-cells-curr">8S LiFePO4 (25.6V)</span>
           </div>
-          <div class="btn-row">
+
+          <!-- Chemistry selector -->
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; flex-wrap:wrap; gap:4px;">
+            <span style="font-size:0.8rem; color:var(--text-mut); font-weight:600;" data-i18n="chem_type">Хімія акумулятора:</span>
+            <div class="btn-row" style="flex:0 0 auto; gap:6px;">
+              <button id="btn-chem-lfp" class="btn-toggle active" onclick="setChem('lifepo4')" style="padding:4px 10px; font-size:0.75rem;">LiFePO4 (3.2V)</button>
+              <button id="btn-chem-liion" class="btn-toggle" onclick="setChem('liion')" style="padding:4px 10px; font-size:0.75rem;">Li-Ion NMC (3.7V)</button>
+            </div>
+          </div>
+
+          <!-- Dynamic quick buttons row -->
+          <div id="quick-cells-row" class="btn-row">
             <button class="btn-toggle" onclick="setCells(4)">4S (12V)</button>
-            <button class="btn-toggle" onclick="setCells(8)">8S (24V)</button>
+            <button class="btn-toggle active" onclick="setCells(8)">8S (24V)</button>
             <button class="btn-toggle" onclick="setCells(16)">16S (48V)</button>
           </div>
+
+          <!-- Dropdown 3..32S -->
           <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
-            <span style="font-size:0.8rem; color:var(--text-mut);" data-i18n="custom_s">Довільна (3..32S):</span>
+            <span style="font-size:0.8rem; color:var(--text-mut);" data-i18n="custom_s">Збірка (3..32S):</span>
             <select id="select-custom-cells" onchange="setCells(this.value)" style="flex:1; background:#161b22; color:#fff; border:1px solid rgba(255,255,255,0.15); border-radius:6px; padding:6px; font-weight:700;">
-              <!-- 3 to 32 options populated in JS -->
+              <!-- options populated dynamically based on chemistry -->
             </select>
           </div>
         </div>
@@ -414,8 +427,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         soc: "Заряд (SOC)",
         temperatures: "Температури",
         control_panel: "Панель керування емулятором",
-        cell_config: "Конфігурація батареї (Кількість комірок)",
-        custom_s: "Довільна (3..32S):",
+        cell_config: "Конфігурація батареї та хімії",
+        chem_type: "Хімія акумулятора:",
+        custom_s: "Збірка (3..32S):",
         protocol_select: "Протокол емуляції BMS",
         jbd_profile_select: "Профіль виробника JBD:",
         redodo_profile_select: "Профіль бренду LiTime / Redodo:",
@@ -442,8 +456,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         soc: "State of Charge (SOC)",
         temperatures: "Temperatures",
         control_panel: "Emulator Control Panel",
-        cell_config: "Battery Configuration (Cell Series)",
-        custom_s: "Custom (3..32S):",
+        cell_config: "Battery Configuration & Chemistry",
+        chem_type: "Battery Chemistry:",
+        custom_s: "Assembly (3..32S):",
         protocol_select: "BMS Protocol Engine",
         jbd_profile_select: "JBD Manufacturer Profile:",
         redodo_profile_select: "LiTime / Redodo Brand Profile:",
@@ -480,13 +495,83 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       });
     }
 
-    // Populate custom cell options 3..32
-    const sel = document.getElementById('select-custom-cells');
-    for (let i = 3; i <= 32; i++) {
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = `${i}S (${(i * 3.2).toFixed(1)}V nominal)`;
-      sel.appendChild(opt);
+    let curChem = 'lifepo4';
+    function updateCellPresets(chem, activeCells) {
+      curChem = chem || 'lifepo4';
+      const isLiion = (curChem === 'liion');
+      const bLfp = document.getElementById('btn-chem-lfp');
+      const bLiion = document.getElementById('btn-chem-liion');
+      if (bLfp) bLfp.className = isLiion ? 'btn-toggle' : 'btn-toggle active';
+      if (bLiion) bLiion.className = isLiion ? 'btn-toggle active' : 'btn-toggle';
+
+      const qRow = document.getElementById('quick-cells-row');
+      if (qRow) {
+        qRow.innerHTML = '';
+        let presets = [];
+        if (isLiion) {
+          presets = [
+            { s: 7, label: '7S (24V)', note: '25.9V nom (29.4V max)' },
+            { s: 12, label: '⚡ 12S (44V)', note: '44.4V nom (50.4V max) - Inverter / Bridge' },
+            { s: 14, label: '14S (48V)', note: '51.8V nom (58.8V max) - 48V Powerwall' }
+          ];
+        } else {
+          presets = [
+            { s: 4, label: '4S (12V)', note: '12.8V nom (14.6V max)' },
+            { s: 8, label: '8S (24V)', note: '25.6V nom (29.2V max)' },
+            { s: 16, label: '16S (48V)', note: '51.2V nom (58.4V max)' }
+          ];
+        }
+        presets.forEach(p => {
+          const btn = document.createElement('button');
+          btn.className = 'btn-toggle' + (p.s === activeCells ? ' active' : '');
+          btn.textContent = p.label;
+          btn.title = p.note;
+          btn.onclick = () => setCells(p.s);
+          qRow.appendChild(btn);
+        });
+      }
+
+      const sel = document.getElementById('select-custom-cells');
+      if (sel && sel.dataset.chem !== curChem) {
+        sel.innerHTML = '';
+        for (let i = 3; i <= 32; i++) {
+          const opt = document.createElement('option');
+          opt.value = i;
+          if (isLiion) {
+            const nom = (i * 3.7).toFixed(1);
+            const maxV = (i * 4.2).toFixed(1);
+            let tag = '';
+            if (i === 12) tag = ' ★ 12S (44.4V nom, 50.4V max - Inverter / Bridge)';
+            else if (i === 14) tag = ' ★ 14S (51.8V nom, 58.8V max - 48V Powerwall)';
+            else if (i === 7) tag = ' ★ 7S (25.9V nom, 29.4V max - 24V)';
+            else if (i === 10) tag = ' (37.0V nom, 42.0V max - 36V)';
+            else if (i === 13) tag = ' (48.1V nom, 54.6V max - 48V E-Bike)';
+            else tag = ` (${nom}V nom, ${maxV}V max)`;
+            opt.textContent = `${i}S Li-Ion` + tag;
+          } else {
+            const nom = (i * 3.2).toFixed(1);
+            const maxV = (i * 3.65).toFixed(1);
+            let tag = '';
+            if (i === 4) tag = ' ★ 4S (12.8V nom, 14.6V max - 12V)';
+            else if (i === 8) tag = ' ★ 8S (25.6V nom, 29.2V max - 24V)';
+            else if (i === 16) tag = ' ★ 16S (51.2V nom, 58.4V max - 48V)';
+            else tag = ` (${nom}V nom, ${maxV}V max)`;
+            opt.textContent = `${i}S LiFePO4` + tag;
+          }
+          sel.appendChild(opt);
+        }
+        sel.dataset.chem = curChem;
+      }
+      if (sel) sel.value = activeCells;
+    }
+
+    async function setChem(chem) {
+      await fetch('/api/set-chem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chem: chem })
+      });
+      fetchData();
     }
 
     let isUpdating = false;
@@ -574,16 +659,19 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         if (rdGrp) rdGrp.style.display = 'none';
       }
 
-      // Cells badge
-      const nominalV = (d.cell_count * 3.2).toFixed(1);
-      document.getElementById('cells-badge').textContent = `${d.cell_count}S (${nominalV}V)`;
-      document.getElementById('label-cells-curr').textContent = `${d.cell_count}S (${nominalV}V)`;
-      document.getElementById('cells-count-title').textContent = `${d.cell_count}S`;
-      sel.value = d.cell_count;
+      // Cells & Chemistry badge
+      const isLiion = (d.chemistry === 'liion');
+      const chemLabel = isLiion ? 'Li-Ion NMC' : 'LiFePO4';
+      const chemShort = isLiion ? 'Li-Ion' : 'LFP';
+      const nominalV = (d.cell_count * (isLiion ? 3.7 : 3.2)).toFixed(1);
+      document.getElementById('cells-badge').textContent = `${d.cell_count}S ${chemShort} (${nominalV}V)`;
+      document.getElementById('label-cells-curr').textContent = `${d.cell_count}S ${chemLabel} (${nominalV}V nom)`;
+      document.getElementById('cells-count-title').textContent = `${d.cell_count}S ${chemShort}`;
+      updateCellPresets(d.chemistry, d.cell_count);
 
       // KPIs
       document.getElementById('kpi-volts').textContent = d.pack_voltage.toFixed(2) + ' V';
-      document.getElementById('kpi-volts-sub').textContent = `${d.cell_count}S LiFePO4 · avg ${(d.pack_voltage / (d.cell_count || 1)).toFixed(3)}V`;
+      document.getElementById('kpi-volts-sub').textContent = `${d.cell_count}S ${chemLabel} · avg ${(d.pack_voltage / (d.cell_count || 1)).toFixed(3)}V`;
 
       const currEl = document.getElementById('kpi-current');
       currEl.textContent = (d.current >= 0 ? '+' : '') + d.current.toFixed(2) + ' A';
@@ -670,7 +758,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         if (isMin) tagHtml = '<span class="cell-tag tag-min">MIN</span>';
         else if (isMax) tagHtml = '<span class="cell-tag tag-max">MAX</span>';
 
-        const pct = Math.min(100, Math.max(0, ((mv - 2800) / (3650 - 2800)) * 100));
+        const minMv = (d.chemistry === 'liion') ? 3000 : 2800;
+        const maxMv = (d.chemistry === 'liion') ? 4200 : 3650;
+        const pct = Math.min(100, Math.max(0, ((mv - minMv) / (maxMv - minMv)) * 100));
         const cellWord = (curLang === 'uk') ? 'Комірка' : 'Cell';
 
         box.innerHTML = `
@@ -904,6 +994,32 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
       </div>
     </div>
 
+    <!-- Battery Chemistry & Series Configuration -->
+    <div class="ota-section">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+        <label style="font-size:1.05rem; font-weight:700;">🔋 Хімія та конфігурація комірок (S):</label>
+        <span id="setup-battery-badge" style="background:rgba(63,185,80,0.2); color:var(--green); padding:4px 10px; border-radius:12px; font-size:0.85rem; font-weight:700;">...</span>
+      </div>
+      <p class="sub" style="margin-bottom:14px;">Виберіть тип хімії (LiFePO4 або Li-Ion NMC) та збірку комірок (наприклад 12S Li-Ion для гібридних інверторів, 14S Powerwall або класичні 4S/8S/16S).</p>
+
+      <div class="form-group">
+        <label for="setup-chem-select">Хімія акумулятора:</label>
+        <select id="setup-chem-select" onchange="setupOnChemChange()" style="width:100%; background:#0b0f14; border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 14px; color:#fff; font-size:0.95rem; outline:none;">
+          <option value="lifepo4">LiFePO4 (3.2V nom, 2.5V-3.65V/cell)</option>
+          <option value="liion">Li-Ion NMC / Ternary (3.7V nom, 3.0V-4.2V/cell)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="setup-cells-select">Конфігурація послідовних комірок (S):</label>
+        <select id="setup-cells-select" style="width:100%; background:#0b0f14; border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 14px; color:#fff; font-size:0.95rem; outline:none; font-weight:600;">
+          <!-- Populated dynamically in JS -->
+        </select>
+      </div>
+
+      <button type="button" class="btn btn-primary" onclick="saveBatteryConfig()" style="margin-top:4px;">💾 Зберегти конфігурацію батареї</button>
+    </div>
+
     <!-- OTA Firmware Update -->
     <div class="ota-section">
       <label>📦 Оновлення прошивки по повітрю (OTA Update):</label>
@@ -1073,7 +1189,88 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
       } catch (e) { alert('Помилка скидання!'); }
     }
 
+    let gSetupChem = 'lifepo4';
+    let gSetupCells = 8;
+
+    function populateSetupCells(chem, selectedCells) {
+      const sel = document.getElementById('setup-cells-select');
+      sel.innerHTML = '';
+      const isLiion = (chem === 'liion');
+      for (let i = 3; i <= 32; i++) {
+        const opt = document.createElement('option');
+        opt.value = i;
+        if (isLiion) {
+          const nom = (i * 3.7).toFixed(1);
+          const maxV = (i * 4.2).toFixed(1);
+          let tag = '';
+          if (i === 12) tag = ' ★ 12S Li-Ion (44.4V nom, 50.4V max - Growatt / Inverter)';
+          else if (i === 14) tag = ' ★ 14S Li-Ion (51.8V nom, 58.8V max - 48V Powerwall)';
+          else if (i === 7) tag = ' ★ 7S Li-Ion (25.9V nom, 29.4V max - 24V)';
+          else if (i === 10) tag = ' (37.0V nom, 42.0V max - 36V)';
+          else if (i === 13) tag = ' (48.1V nom, 54.6V max - 48V E-Bike)';
+          else tag = ` (${nom}V nom, ${maxV}V max)`;
+          opt.textContent = `${i}S Li-Ion` + tag;
+        } else {
+          const nom = (i * 3.2).toFixed(1);
+          const maxV = (i * 3.65).toFixed(1);
+          let tag = '';
+          if (i === 4) tag = ' ★ 4S (12.8V nom, 14.6V max - 12V)';
+          else if (i === 8) tag = ' ★ 8S (25.6V nom, 29.2V max - 24V)';
+          else if (i === 16) tag = ' ★ 16S (51.2V nom, 58.4V max - 48V)';
+          else tag = ` (${nom}V nom, ${maxV}V max)`;
+          opt.textContent = `${i}S LiFePO4` + tag;
+        }
+        sel.appendChild(opt);
+      }
+      sel.value = selectedCells;
+    }
+
+    function setupOnChemChange() {
+      const chem = document.getElementById('setup-chem-select').value;
+      const currentCellVal = parseInt(document.getElementById('setup-cells-select').value) || gSetupCells;
+      let defaultCells = currentCellVal;
+      if (chem === 'liion' && currentCellVal === 8) defaultCells = 12;
+      else if (chem === 'lifepo4' && currentCellVal === 12) defaultCells = 8;
+      populateSetupCells(chem, defaultCells);
+    }
+
+    async function loadBatteryConfig() {
+      try {
+        const res = await fetch('/api/data');
+        const data = await res.json();
+        gSetupChem = data.chemistry || 'lifepo4';
+        gSetupCells = data.cell_count || 8;
+        const bBadge = document.getElementById('setup-battery-badge');
+        if (bBadge) {
+          const isLiion = (gSetupChem === 'liion');
+          const nomV = (gSetupCells * (isLiion ? 3.7 : 3.2)).toFixed(1);
+          bBadge.textContent = `${gSetupCells}S ${isLiion ? 'Li-Ion NMC' : 'LiFePO4'} (${nomV}V)`;
+        }
+        document.getElementById('setup-chem-select').value = gSetupChem;
+        populateSetupCells(gSetupChem, gSetupCells);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function saveBatteryConfig() {
+      const chem = document.getElementById('setup-chem-select').value;
+      const cells = parseInt(document.getElementById('setup-cells-select').value);
+      try {
+        await fetch('/api/set-cells', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cells: cells, chem: chem })
+        });
+        alert('Конфігурацію батареї збережено!');
+        loadBatteryConfig();
+      } catch (e) {
+        alert('Помилка збереження конфігурації батареї!');
+      }
+    }
+
     loadMacProfiles();
+    loadBatteryConfig();
   </script>
 </body>
 </html>
