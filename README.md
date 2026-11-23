@@ -45,7 +45,7 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
   - Polling negotiation (`0xDB 0xDB` / `0x5A 0x5A`) and switch controls (`0xA5 0xA5`).
 - **JKBMS (Official JiKong App for iOS & Android & ESPHome)**:
   - **100% native compatibility in JKBMS mode (`JK-B2A<N>S20P`)**.
-  - JK02 protocol with 300-byte telemetry frames via Service `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`.
+  - JK02 protocol with 300-byte telemetry frames via Service `0xFFE0` / Notify `0xFFE1` / Write `0xFFE2`, automatically selecting **JK02_24S** (`3S..24S`) or **JK02_32S** (`25S..32S`, extended 32-cell layout) framing.
   - Device Information Service `0x180A`, CellInfo (`0x96`), Settings (`0x97`), and register control (`0x1D`/`0x1E`/`0x1F`).
 - **Redodo / LiTime BMS (Official LiTime / Redodo Apps & Web Bluetooth)**:
   - **100% native compatibility with official LiTime App (iOS & Android) and Redodo App**.
@@ -72,22 +72,23 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
     - Automatic AP fallback if local Wi-Fi is unreachable.
 - **Web UI Features (Dark Glassmorphic UI, UA / EN bilingual)**:
   - 📊 **Live Telemetry Monitoring**: Pack voltage, charge/discharge current, output Watts, battery SOC %, remaining Ah, temperatures, and cell voltage delta $\Delta V$ (mV).
-  - 🔋 **Instant Battery Series Configuration**: 1-click preset buttons for **4S (12V)**, **8S (24V)**, and **16S (48V)**, plus dynamic selection from **3S up to 32S** persisted in NVS Flash.
-  - 🔄 **4-in-1 Protocol Switcher**: Seamless 1-click toggling between **JBD BMS**, **Daly BMS**, **Ant BMS**, and **JKBMS**.
+  - 🧪 **Battery Chemistry Selector (LiFePO4 / Li-Ion NMC)**: Switch between **LiFePO4 (3.2V/cell)** and **Li-Ion NMC (3.7V/cell)** with automatic chemistry-matched OVP/UVP/balancing registers and dynamic **SOC-coupled OCV + load sag/rise physics** (Li-Ion NMC: 3.20V–4.16V OCV ± load up to 4.20V; LiFePO4: 3.10V–3.38V OCV ± load up to 3.55V).
+  - 🔋 **Instant Battery Series Configuration**: 1-click presets for **4S (12V)**, **8S (24V)**, **12S (44.4V Li-Ion)**, **14S (51.8V Li-Ion)**, and **16S (48V)**, plus dynamic selection from **3S up to 32S** persisted in NVS Flash.
+  - 🔄 **5-in-1 Protocol Switcher**: Seamless 1-click toggling between **JBD BMS**, **Daly BMS**, **Ant BMS**, **JKBMS**, and **Redodo / LiTime**.
   - 📡 **BLE MAC Management**: Quick selector and custom MAC address manager with persistent profiles.
-  - ⚡ **Load & Physics Simulation**: Select between **Discharge** (-17A), **Charge** (+25A), and **Standby** (0A), with live SOC slider (0–100%).
+  - ⚡ **Load & Physics Simulation**: Select between **Discharge** (-17A), **Charge** (+25A), and **Standby** (0A), with live SOC slider (0–100%) that dynamically updates cell and pack voltages.
   - 🛡️ **MOSFET Switch Control**: Independent toggling of Charge MOS and Discharge MOS.
   - 📈 **Cell Voltages Matrix**: Individual cell voltage cards with color-coded battery level indicators and automated Min/Max cell identification.
   - 🚀 **Over-The-Air Firmware Updates (Web OTA)**: Upload compiled `.bin` firmware directly via the browser without USB.
 
 ---
 
-### 🔄 Quad-Protocol Switching Architecture
+### 🔄 5-Protocol Switching Architecture
 - **Instant Mode Switching**:
   - **Hardware Button (BOOT / GPIO 9)**: Long press (> 1.5s) cycles to the next protocol with visual feedback. Hold at power-on also cycles modes.
-  - **Hardware Double Reset**: Double-clicking the **RST** button within 2.5 seconds cycles through the 4 protocols (JBD → Daly → Ant → JK → JBD).
-  - **Interactive Serial CLI**: Enter `j` (JBD), `y` (Daly), `a` (Ant), `k` (JK), or `m` (cycle) in the serial terminal (115200 baud).
-  - **Web Dashboard**: Click any of the 4 protocol buttons on the dashboard or use `/api/set-proto`.
+  - **Hardware Double Reset**: Double-clicking the **RST** button within 2.5 seconds cycles through all 5 protocols (JBD → Daly → Ant → JK → Redodo → JBD).
+  - **Interactive Serial CLI**: Enter `j` (JBD), `y` (Daly), `a` (Ant), `k` (JK), `r` (Redodo/LiTime), or `m` (cycle) in the serial terminal (115200 baud).
+  - **Web Dashboard**: Click any of the 5 protocol buttons on the dashboard or use `/api/set-proto`.
 - **Dynamic BLE Identity**:
   - Automatically swaps BLE device name, GATT services, characteristics, and hardware MAC address on mode change.
 
@@ -99,6 +100,7 @@ This project allows safe, rapid bench testing, debugging, and calibration of inv
   - 🟣 **Magenta**: Daly Smart BMS mode
   - 🔵 **Blue**: Ant BMS mode
   - 🟠 **Orange**: JKBMS mode
+  - 🟡 **Yellow**: Redodo / LiTime BMS mode
 - **Connected**:
   - 🟢 **Green**: Standby (0.00 A / Idle).
   - 🩵 **Cyan**: Active Charge (+25.00 A).
@@ -165,7 +167,6 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `mac add <MAC> [label]`: Add a new MAC address to the profile list without rebooting.
 - `mac del <1-N>`: Delete a MAC profile from the stored list.
 - `mac reset`: Reset stored MAC profiles to factory defaults.
-- `m` or `M`: Toggle protocol (**JBD** $\leftrightarrow$ **DALY**).
 - `j` or `jbd`: Force **JBD BMS** mode (current profile).
 - `pq` or `powerqueen`: Switch to **PowerQueen JBD** profile (`P-12100B` / `P-24100B`).
 - `os` or `overkill`: Switch to **Overkill Solar JBD** profile (`Overkill Solar BMS`).
@@ -177,7 +178,8 @@ esptool.py -p /dev/cu.usbmodem* -b 921600 write_flash 0x0000 bin/jbd_emulator_es
 - `rd` or `redodo`: Switch to **Redodo** profile (`Redodo-12V100A` / `Redodo-24V100A`).
 - `r`: Force **Redodo / LiTime BMS** mode (current sub-profile).
 - `m` or `toggle`: Cycle through all 5 BMS emulator modes.
-- `4s` / `8s` / `16s`: Set battery series count (or `cells <N>`, 3..32).
+- `chem <lifepo4|liion>`: Switch battery chemistry (**LiFePO4 3.2V** / **Li-Ion NMC 3.7V**), or `chem` to toggle.
+- `4s` / `8s` / `12s` / `14s` / `16s`: Set battery series count (or `cells <N>`, 3..32).
 - `1` or `dis`: Active discharge mode ($-17.00\text{ A}$) $\to$ 🟠 Orange LED.
 - `2` or `chg`: Active charge mode ($+25.00\text{ A}$) $\to$ 🩵 Cyan LED.
 - `0` or `idle`: Standby mode ($0.00\text{ A}$) $\to$ 🟢 Green LED.
