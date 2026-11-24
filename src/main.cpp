@@ -500,6 +500,7 @@ void initDoubleResetAndMode() {
     uint8_t savedRdSub = s_prefs.getUChar("rd_sub", REDODO_PROFILE_LITIME);
     if (savedRdSub > REDODO_PROFILE_REDODO) savedRdSub = REDODO_PROFILE_LITIME;
     g_redodoProfile = (RedodoProfile)savedRdSub;
+    s_prefs.end();
     updateJbdNames();
 
     // Initialize cell voltages matching loaded chemistry and SOC
@@ -516,7 +517,9 @@ void initDoubleResetAndMode() {
 
 void setBatteryChemistry(BatteryChemistry chem) {
     g_chemistry = chem;
+    s_prefs.begin("bms_emu", false);
     s_prefs.putUChar("chem", (uint8_t)g_chemistry);
+    s_prefs.end();
 
     uint16_t baseMv = getTargetCellBaseMv(g_chemistry, g_bms.soc_percent, g_bms.mode);
 
@@ -536,7 +539,9 @@ void setBatteryChemistry(BatteryChemistry chem) {
 void setCellCount(uint8_t cnt) {
     if (cnt < 3 || cnt > 32) return;
     g_bms.cell_count = cnt;
+    s_prefs.begin("bms_emu", false);
     s_prefs.putUChar("cell_cnt", cnt);
+    s_prefs.end();
     if (g_jbdProfile == JBD_PROFILE_POWERQUEEN && cnt == 4) {
         g_bms.nominal_cap_10mah = 10000;
         g_bms.remain_cap_10mah = (uint16_t)(((uint32_t)g_bms.nominal_cap_10mah * g_bms.soc_percent) / 100);
@@ -3831,8 +3836,11 @@ void setupWebServerRoutes() {
         String ssid = doc["ssid"] | "";
         String pass = doc["pass"] | "";
         if (ssid.length() > 0) {
+            s_prefs.begin("bms_emu", false);
             s_prefs.putString("wifi_ssid", ssid);
             s_prefs.putString("wifi_pass", pass);
+            s_prefs.end();
+            Serial.printf("[WIFI] Successfully saved Wi-Fi SSID '%s' to NVS!\n", ssid.c_str());
         }
         g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
         delay(500);
@@ -3841,8 +3849,11 @@ void setupWebServerRoutes() {
 
     // API: Reset Wi-Fi Credentials
     g_httpServer.on("/api/reset-wifi", HTTP_POST, []() {
+        s_prefs.begin("bms_emu", false);
         s_prefs.remove("wifi_ssid");
         s_prefs.remove("wifi_pass");
+        s_prefs.end();
+        Serial.println("[WIFI] Cleared Wi-Fi credentials from NVS. Returning to AP mode...");
         g_httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
         delay(500);
         esp_restart();
@@ -4022,17 +4033,20 @@ void setupWebServerRoutes() {
 }
 
 void initWiFiAndWebServer() {
+    s_prefs.begin("bms_emu", true);
     g_wifiSsid = s_prefs.getString("wifi_ssid", "");
     g_wifiPass = s_prefs.getString("wifi_pass", "");
+    s_prefs.end();
 
     if (g_wifiSsid.length() > 0) {
         WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false);
         WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
-        Serial.printf("[WIFI] Connecting to '%s'...", g_wifiSsid.c_str());
+        Serial.printf("[WIFI] Connecting to '%s' (timeout 15s)...", g_wifiSsid.c_str());
 
         uint32_t startAttempt = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
-            delay(300);
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
+            delay(500);
             Serial.print(".");
         }
         Serial.println();
@@ -4045,7 +4059,8 @@ void initWiFiAndWebServer() {
                 Serial.println("[MDNS] Responding at http://bms-emulator.local");
             }
         } else {
-            Serial.println("[WIFI] Connection failed. Fallback to AP Mode...");
+            Serial.printf("[WIFI] Connection to '%s' failed (status: %d). Fallback to AP Mode...\n", 
+                          g_wifiSsid.c_str(), (int)WiFi.status());
             startApMode();
         }
     } else {
@@ -4622,7 +4637,9 @@ void loop() {
     // Expire double reset window after 2.5 seconds of stable running
     if (g_doubleResetPending && (now - g_bootTime > 2500)) {
         g_doubleResetPending = false;
+        s_prefs.begin("bms_emu", false);
         s_prefs.putBool("dr_flag", false);
+        s_prefs.end();
     }
 
     // Hardware Button (GPIO 9 BOOT Button): Long press (> 1.5s) with live visual feedback
@@ -4871,10 +4888,14 @@ void loop() {
             } else if (cmd == "r") {
                 setEmulatorMode(PROTO_REDODO);
             } else if (cmd == "w" || cmd == "wifi") {
-                Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
+                s_prefs.begin("bms_emu", true);
+                String savedSsid = s_prefs.getString("wifi_ssid", "");
+                s_prefs.end();
+                Serial.printf("\n[WIFI STATUS] Mode: %s | IP: %s | Active SSID: '%s' | Stored NVS SSID: '%s' | RSSI: %d dBm | Free Heap: %u bytes\n\n",
                               g_isApMode ? "AP (BMS-Emulator-Setup)" : "STA",
                               g_isApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
                               g_isApMode ? "BMS-Emulator-Setup" : g_wifiSsid.c_str(),
+                              savedSsid.c_str(),
                               g_isApMode ? 0 : WiFi.RSSI(),
                               ESP.getFreeHeap());
             } else if (cmd.startsWith("wifi ") || cmd.startsWith("connect ")) {
@@ -4883,8 +4904,10 @@ void loop() {
                 if (sp1 > 0 && sp2 > 0) {
                     String s = cmd.substring(sp1 + 1, sp2);
                     String p = cmd.substring(sp2 + 1);
+                    s_prefs.begin("bms_emu", false);
                     s_prefs.putString("wifi_ssid", s);
                     s_prefs.putString("wifi_pass", p);
+                    s_prefs.end();
                     Serial.printf(">>> Wi-Fi credentials saved for SSID '%s'! Restarting...\n", s.c_str());
                     delay(500);
                     esp_restart();
