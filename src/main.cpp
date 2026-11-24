@@ -4843,12 +4843,50 @@ void loop() {
 
     // Interactive Serial Control
     if (Serial.available()) {
-        String cmd = Serial.readStringUntil('\n');
-        cmd.trim();
+        String rawCmd = Serial.readStringUntil('\n');
+        rawCmd.trim();
         // Check BLE MAC management commands first (case-preserving for labels)
-        if (handleMacSerialCommand(cmd)) {
+        if (handleMacSerialCommand(rawCmd)) {
             // Handled by MAC subsystem
+        } else if (rawCmd.startsWith("wifi ") || rawCmd.startsWith("connect ") ||
+                   rawCmd.startsWith("WIFI ") || rawCmd.startsWith("CONNECT ")) {
+            String rest = rawCmd.substring(rawCmd.indexOf(' ') + 1);
+            rest.trim();
+            String s = "", p = "";
+            if (rest.startsWith("\"")) {
+                int q2 = rest.indexOf('"', 1);
+                if (q2 > 0) {
+                    s = rest.substring(1, q2);
+                    p = rest.substring(q2 + 1);
+                    p.trim();
+                }
+            } else if (rest.indexOf('|') > 0) {
+                int bar = rest.indexOf('|');
+                s = rest.substring(0, bar);
+                p = rest.substring(bar + 1);
+                s.trim(); p.trim();
+            } else {
+                int lastSp = rest.lastIndexOf(' ');
+                if (lastSp > 0) {
+                    s = rest.substring(0, lastSp);
+                    p = rest.substring(lastSp + 1);
+                    s.trim(); p.trim();
+                }
+            }
+            if (s.length() > 0) {
+                s_prefs.begin("bms_emu", false);
+                s_prefs.putString("wifi_ssid", s);
+                s_prefs.putString("wifi_pass", p);
+                s_prefs.end();
+                Serial.printf(">>> Wi-Fi credentials saved for SSID '%s' (password length: %u)! Restarting...\n", 
+                              s.c_str(), (unsigned int)p.length());
+                delay(500);
+                esp_restart();
+            } else {
+                Serial.println(">>> Usage: wifi <SSID> <PASSWORD> (e.g. wifi \"DIRECT-urWorkCentre 3345\" 31283128r) <<<");
+            }
         } else {
+            String cmd = rawCmd;
             cmd.toLowerCase();
             if (cmd == "m" || cmd == "mode" || cmd == "toggle") {
                 toggleEmulatorMode();
@@ -4898,22 +4936,6 @@ void loop() {
                               savedSsid.c_str(),
                               g_isApMode ? 0 : WiFi.RSSI(),
                               ESP.getFreeHeap());
-            } else if (cmd.startsWith("wifi ") || cmd.startsWith("connect ")) {
-                int sp1 = cmd.indexOf(' ');
-                int sp2 = cmd.indexOf(' ', sp1 + 1);
-                if (sp1 > 0 && sp2 > 0) {
-                    String s = cmd.substring(sp1 + 1, sp2);
-                    String p = cmd.substring(sp2 + 1);
-                    s_prefs.begin("bms_emu", false);
-                    s_prefs.putString("wifi_ssid", s);
-                    s_prefs.putString("wifi_pass", p);
-                    s_prefs.end();
-                    Serial.printf(">>> Wi-Fi credentials saved for SSID '%s'! Restarting...\n", s.c_str());
-                    delay(500);
-                    esp_restart();
-                } else {
-                    Serial.println(">>> Usage: wifi <SSID> <PASSWORD> <<<");
-                }
             } else if (cmd.startsWith("chem ") || cmd.startsWith("chemistry ")) {
                 String arg = cmd.substring(cmd.indexOf(' ') + 1);
                 arg.trim();

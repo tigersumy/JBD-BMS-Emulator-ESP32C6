@@ -1059,7 +1059,8 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
       e.preventDefault();
       const ssid = document.getElementById('ssid').value;
       const pass = document.getElementById('pass').value;
-      if (!confirm(`Зберегти Wi-Fi мережу "${ssid}" та перезавантажитись для підключення?`)) return;
+      const btn = e.target.querySelector('button[type="submit"]') || document.querySelector('button.btn-primary');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Збереження...'; }
 
       try {
         await fetch('/api/save-wifi', {
@@ -1067,25 +1068,25 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid, pass })
         });
-        alert('Налаштування збережено! Емулятор підключається до Wi-Fi...');
+        if (btn) btn.textContent = '✅ Збережено! Перезавантаження...';
         setTimeout(() => { window.location.href = '/'; }, 3000);
       } catch (err) {
-        alert('Помилка збереження!');
+        if (btn) { btn.disabled = false; btn.textContent = '❌ Помилка збереження'; }
       }
     }
 
     async function resetWifi() {
-      if (!confirm('Скинути налаштування Wi-Fi та повернутися в режим точки доступу (AP)?')) return;
-      await fetch('/api/reset-wifi', { method: 'POST' });
-      alert('Wi-Fi скинуто. Емулятор повертається в режим BMS-Emulator-Setup.');
-      setTimeout(() => { window.location.href = '/'; }, 2000);
+      try {
+        await fetch('/api/reset-wifi', { method: 'POST' });
+        setTimeout(() => { window.location.href = '/'; }, 2000);
+      } catch (err) {}
     }
 
     async function restartDevice() {
-      if (!confirm('Перезавантажити мікроконтролер?')) return;
-      await fetch('/api/restart', { method: 'POST' });
-      alert('Перезавантаження...');
-      setTimeout(() => { window.location.href = '/'; }, 3000);
+      try {
+        await fetch('/api/restart', { method: 'POST' });
+        setTimeout(() => { window.location.href = '/'; }, 3000);
+      } catch (err) {}
     }
 
     async function loadMacProfiles() {
@@ -1120,16 +1121,14 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
     }
 
     async function selectMacProfile(idx, mac) {
-      if (!confirm(`Перемкнути MAC-адресу на ${mac} та перезавантажити емулятор?`)) return;
       try {
         await fetch('/api/mac/select', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ index: idx })
         });
-        alert(`MAC-адресу перемкнуто на ${mac}! Емулятор перезавантажується...`);
         setTimeout(() => { window.location.href = '/'; }, 3000);
-      } catch (err) { alert('Помилка перемикання!'); }
+      } catch (err) {}
     }
 
     async function applyCustomMac(rebootNow) {
@@ -1139,20 +1138,17 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
       const label = labelInput.value.trim();
       const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
       if (!macRegex.test(mac)) {
-        alert('Некоректний формат MAC-адреси! Приклад: A5:C2:37:2D:5C:A9');
         return;
       }
       if (rebootNow) {
-        if (!confirm(`Встановити активний MAC ${mac} та перезавантажити?`)) return;
         try {
           await fetch('/api/mac/set', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mac, label })
           });
-          alert('Новий MAC встановлено! Перезавантаження...');
           setTimeout(() => { window.location.href = '/'; }, 3000);
-        } catch (e) { alert('Помилка збереження!'); }
+        } catch (e) {}
       } else {
         try {
           await fetch('/api/mac/add', {
@@ -1163,13 +1159,11 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
           macInput.value = '';
           labelInput.value = '';
           loadMacProfiles();
-          alert('Профіль успішно додано до списку!');
-        } catch (e) { alert('Помилка додавання!'); }
+        } catch (e) {}
       }
     }
 
     async function deleteMacProfile(idx, label) {
-      if (!confirm(`Видалити профіль "${label}"?`)) return;
       try {
         await fetch('/api/mac/del', {
           method: 'POST',
@@ -1177,16 +1171,14 @@ static const char SETUP_HTML[] PROGMEM = R"rawliteral(
           body: JSON.stringify({ index: idx })
         });
         loadMacProfiles();
-      } catch (e) { alert('Помилка видалення!'); }
+      } catch (e) {}
     }
 
     async function resetMacDefaults() {
-      if (!confirm('Скинути всі збережені профілі MAC до початкових за замовчуванням?')) return;
       try {
         await fetch('/api/mac/reset', { method: 'POST' });
         loadMacProfiles();
-        alert('Список профілів відновлено до фабричних значень.');
-      } catch (e) { alert('Помилка скидання!'); }
+      } catch (e) {}
     }
 
     let gSetupChem = 'lifepo4';
