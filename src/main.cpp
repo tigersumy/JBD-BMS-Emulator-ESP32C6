@@ -3520,6 +3520,7 @@ void startApMode() {
     WiFi.disconnect(true, true);
     delay(100);
     WiFi.mode(WIFI_AP);
+    WiFi.setSleep(false); // Disable modem sleep to prevent Wi-Fi beacon drops while BLE is advertising
     IPAddress apIP(192, 168, 4, 1);
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     bool apOk = WiFi.softAP("BMS-Emulator-Setup", nullptr, 1, 0, 4);
@@ -3544,14 +3545,16 @@ void setupWebServerRoutes() {
     // Main Dashboard & Captive Portal
     g_httpServer.on("/", HTTP_GET, []() {
         if (g_isApMode) {
-            String host = g_httpServer.hostHeader();
-            if (host.length() > 0 && host.indexOf("192.168.4.1") < 0) {
-                // Captive portal redirect to dashboard
-                g_httpServer.sendHeader("Location", "http://192.168.4.1/", true);
-                g_httpServer.send(302, "text/plain", "");
-                return;
-            }
+            // In AP mode, redirect straight to Wi-Fi setup so phone's captive assistant opens setup immediately
+            g_httpServer.sendHeader("Location", "http://192.168.4.1/setup", true);
+            g_httpServer.send(302, "text/plain", "");
+            return;
         }
+        g_httpServer.send_P(200, "text/html", INDEX_HTML);
+    });
+
+    // Explicit Dashboard route
+    g_httpServer.on("/dashboard", HTTP_GET, []() {
         g_httpServer.send_P(200, "text/html", INDEX_HTML);
     });
 
@@ -3560,15 +3563,29 @@ void setupWebServerRoutes() {
         g_httpServer.send_P(200, "text/html", SETUP_HTML);
     });
 
-    // Captive Portal standard endpoints
+    // Captive Portal standard endpoints for iOS, Android, Windows
     auto handleCaptive = []() {
-        g_httpServer.sendHeader("Location", "http://192.168.4.1/", true);
+        g_httpServer.sendHeader("Location", "http://192.168.4.1/setup", true);
         g_httpServer.send(302, "text/plain", "");
     };
     g_httpServer.on("/generate_204", HTTP_GET, handleCaptive);
+    g_httpServer.on("/gen_204", HTTP_GET, handleCaptive);
     g_httpServer.on("/hotspot-detect.html", HTTP_GET, handleCaptive);
     g_httpServer.on("/connectivity-check.html", HTTP_GET, handleCaptive);
+    g_httpServer.on("/check_network_status.txt", HTTP_GET, handleCaptive);
     g_httpServer.on("/ncsi.txt", HTTP_GET, handleCaptive);
+    g_httpServer.on("/connecttest.txt", HTTP_GET, handleCaptive);
+    g_httpServer.on("/redirect", HTTP_GET, handleCaptive);
+    g_httpServer.on("/canonical.html", HTTP_GET, handleCaptive);
+
+    g_httpServer.onNotFound([]() {
+        if (g_isApMode) {
+            g_httpServer.sendHeader("Location", "http://192.168.4.1/setup", true);
+            g_httpServer.send(302, "text/plain", "");
+        } else {
+            g_httpServer.send(404, "text/plain", "Not Found");
+        }
+    });
 
     // API: Live Telemetry Data
     g_httpServer.on("/api/data", HTTP_GET, []() {
@@ -3790,7 +3807,8 @@ void setupWebServerRoutes() {
 
     // API: Scan Wi-Fi Networks
     g_httpServer.on("/api/scan-wifi", HTTP_GET, []() {
-        int n = WiFi.scanNetworks(false, false);
+        // Fast active scan (80ms dwell per channel) to prevent softAP beacon loss
+        int n = WiFi.scanNetworks(false, false, false, 80);
         JsonDocument doc;
         JsonArray arr = doc.to<JsonArray>();
         for (int i = 0; i < n; i++) {
